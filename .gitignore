@@ -29,4 +29,5 @@ Thumbs.db
 .idea/
 
 # Local runtime artifacts
-.pi/
+.pi/*
+!.pi/APPEND_SYSTEM.md
