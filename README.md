@@ -1,9 +1,10 @@
 # Global Pi Extensions
 
-This repo contains two lightweight global extensions for Pi:
+This repo contains lightweight global extensions for Pi:
 
 1. **`show-system-prompt.ts`**
 2. **`web-tools.ts`**
+3. **`guardrails.ts`**
 
 ## Installation
 
@@ -76,6 +77,37 @@ Optional:
 
 Output is truncated to Pi defaults (about 50KB / 2000 lines), with full text saved to a temp file when truncation occurs.
 
+## 3) `guardrails`
+Adds lightweight runtime safety checks without changing day-to-day workflow.
+
+### Behavior
+- Intercepts **`write`** and **`edit`** tool calls.
+- Blocks writes when content looks like a likely secret (e.g., private key blocks, AWS keys, PAT-style tokens, JWTs, obvious `api_key`/`token` assignments).
+- Intercepts **`bash`** tool calls.
+- Prompts only for clearly dangerous commands (e.g., `rm -rf`, `mkfs`, destructive `dd`, `git reset --hard`, destructive `git clean`, reboot/shutdown patterns).
+
+### UX model
+- Safe/normal commands: no prompt.
+- Dangerous bash command in interactive mode: **one-time allow** prompt.
+- Dangerous bash command in non-interactive mode: blocked by default.
+
+## Testing
+
+This repo includes lightweight unit tests for guardrail detection logic.
+
+Run with Nix:
+
+```bash
+nix develop --command node --test tests/*.test.mjs
+```
+
+Current tests:
+- `tests/guardrails-core.test.mjs` (secret/dangerous-command detection)
+
+Recommended test strategy for extensions:
+1. **Unit tests** for pure logic (regex/policy decision code).
+2. **Targeted smoke tests** in a real `pi` session for event-hook behavior.
+
 ## Notes
 - Keep secrets out of this repo.
-- For environment setup and policy, see `AGENTS.md`.
+- For environment setup and policy, see `AGENTS.md` and `.pi/APPEND_SYSTEM.md`.
