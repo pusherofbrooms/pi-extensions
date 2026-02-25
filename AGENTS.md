@@ -20,3 +20,6 @@ Treat it as production-adjacent config/code used across environments.
 - At minimum, add or update tests for behavior changes.
 - Keep tests focused, fast, and easy to run in the Nix dev environment.
 
+## Commit & Push Workflow (Preferred)
+- After relevant tests pass, commit and push unless explicitly asked not to.
+
