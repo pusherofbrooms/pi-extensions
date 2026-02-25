@@ -5,6 +5,41 @@ This repo contains two lightweight global extensions for Pi:
 1. **`show-system-prompt.ts`**
 2. **`web-tools.ts`**
 
+## Installation
+
+These are global Pi extensions loaded from your extensions directory.
+
+### Option 1: Copy individual extension files (safest)
+
+Copy any `.ts` extension file you want into:
+
+- `~/.pi/agent/extensions`
+
+### Option 2: Use this repo as your extensions directory
+
+If you want this repo to be your full global extensions folder:
+
+```bash
+git clone git@github.com:pusherofbrooms/pi-extensions.git ~/.pi/agent/extensions
+```
+
+If the directory already exists and is already a git repo:
+
+```bash
+cd ~/.pi/agent/extensions
+git remote add origin git@github.com:pusherofbrooms/pi-extensions.git
+git pull origin main
+```
+
+## Updating
+
+```bash
+cd ~/.pi/agent/extensions
+git pull --ff-only
+```
+
+> Set provider API keys in your shell environment (not in this repo).
+
 ## 1) `show-system-prompt`
 Adds a command named **`show-system-prompt`**.
 
