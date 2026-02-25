@@ -15,3 +15,8 @@ Treat it as production-adjacent config/code used across environments.
 - If validation cannot be run, state that clearly.
 - Update docs or inline usage notes when behavior/config changes.
 
+## Testing Workflow (Preferred)
+- Prefer TDD for new logic and bug fixes when practical.
+- At minimum, add or update tests for behavior changes.
+- Keep tests focused, fast, and easy to run in the Nix dev environment.
+
