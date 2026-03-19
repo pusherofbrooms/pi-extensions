@@ -82,10 +82,13 @@ Adds lightweight runtime safety checks without changing day-to-day workflow.
 - Dangerous bash command in non-interactive mode: blocked by default.
 
 ## 4) `subagents`
-Adds two tools:
+Adds two tools and command helpers:
 
 - **`subagent`**: runs named agents in isolated in-memory sessions (single, parallel, chain).
 - **`experiment_loop`**: orchestrates iterative experiments using a worker subagent plus deterministic evaluation command.
+- **`/agents`**: lists discovered agents and their source.
+- **`/agent <name> <task>`**: run any discovered agent by name.
+- Dynamic aliases like **`/scout ...`** or **`/worker ...`** are auto-registered when command names do not conflict.
 
 ### Agent files
 Discovery order (by name override):

@@ -216,6 +216,10 @@ function formatAgentList(agents: AgentConfig[]): string {
 	return agents.map((a) => `${a.name} (${a.source})`).join(", ");
 }
 
+function isValidAgentCommandName(name: string): boolean {
+	return /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(name);
+}
+
 async function mapWithConcurrencyLimit<TIn, TOut>(
 	items: TIn[],
 	concurrency: number,
@@ -406,6 +410,124 @@ const ExperimentParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	const registeredAliasCommands = new Set<string>();
+	const reservedCommandNames = new Set(["agent", "agents", "subagent", "experiment_loop"]);
+
+	const runAgentCommand = async (agentName: string, task: string, ctx: any) => {
+		if (!task.trim()) {
+			ctx.ui.notify(`Usage: /${agentName} <task>`, "error");
+			return;
+		}
+
+		const discovery = discoverAgents(ctx.cwd, "both");
+		const target = discovery.agents.find((a) => a.name === agentName);
+		if (!target) {
+			ctx.ui.notify(`Unknown agent: ${agentName}. Available: ${formatAgentList(discovery.agents)}`, "error");
+			return;
+		}
+
+		if (target.source === "project" && ctx.hasUI) {
+			const ok = await ctx.ui.confirm(
+				"Run project-local agent?",
+				`Agent: ${target.name}\nSource: ${target.filePath}\n\nProject agents are repo-controlled prompts. Continue only if trusted.`,
+			);
+			if (!ok) {
+				ctx.ui.notify("Canceled", "info");
+				return;
+			}
+		}
+
+		const result = await runSingleAgent(
+			ctx.cwd,
+			discovery.agents,
+			agentName,
+			task,
+			ctx.cwd,
+			undefined,
+			undefined,
+			ctx,
+			undefined,
+			(results) => ({
+				mode: "single",
+				agentScope: "both",
+				projectAgentsDir: discovery.projectAgentsDir,
+				results,
+			}),
+		);
+
+		const text = getFinalOutput(result.messages) || result.stderr || "(no output)";
+		pi.sendMessage({
+			customType: "subagent-command",
+			content: `[${agentName}] ${text}`,
+			display: true,
+			details: { result },
+		});
+
+		if (result.exitCode !== 0 && ctx.hasUI) {
+			ctx.ui.notify(`Agent ${agentName} failed`, "error");
+		}
+	};
+
+	const registerAliasesForCwd = (cwd: string) => {
+		const discovery = discoverAgents(cwd, "both");
+		const existing = new Set(pi.getCommands().map((c) => c.name));
+		for (const agent of discovery.agents) {
+			const name = agent.name;
+			if (!isValidAgentCommandName(name)) continue;
+			if (reservedCommandNames.has(name)) continue;
+			if (registeredAliasCommands.has(name)) continue;
+			if (existing.has(name)) continue;
+
+			pi.registerCommand(name, {
+				description: `Run subagent ${name}`,
+				handler: async (args, ctx) => {
+					await runAgentCommand(name, args, ctx);
+				},
+			});
+			registeredAliasCommands.add(name);
+		}
+	};
+
+	pi.registerCommand("agents", {
+		description: "List available subagents and their source",
+		handler: async (_args, ctx) => {
+			const discovery = discoverAgents(ctx.cwd, "both");
+			if (discovery.agents.length === 0) {
+				ctx.ui.notify("No agents found.", "warning");
+				return;
+			}
+			const lines = discovery.agents.map((a) => `- ${a.name} (${a.source}): ${a.description}`);
+			pi.sendMessage({
+				customType: "subagent-command",
+				content: `Available agents:\n${lines.join("\n")}`,
+				display: true,
+			});
+		},
+	});
+
+	pi.registerCommand("agent", {
+		description: "Run an agent by name. Usage: /agent <name> <task>",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			if (!trimmed) {
+				ctx.ui.notify("Usage: /agent <name> <task>", "error");
+				return;
+			}
+			const spaceIndex = trimmed.indexOf(" ");
+			if (spaceIndex < 0) {
+				ctx.ui.notify("Usage: /agent <name> <task>", "error");
+				return;
+			}
+			const name = trimmed.slice(0, spaceIndex).trim();
+			const task = trimmed.slice(spaceIndex + 1).trim();
+			await runAgentCommand(name, task, ctx);
+		},
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
+		registerAliasesForCwd(ctx.cwd);
+	});
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
