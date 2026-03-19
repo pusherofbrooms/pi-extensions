@@ -89,6 +89,7 @@ Adds two tools and command helpers:
 - **`/agents`**: lists discovered agents and their source.
 - **`/agent <name> <task>`**: run any discovered agent by name.
 - Dynamic aliases like **`/scout ...`** or **`/worker ...`** are auto-registered when command names do not conflict.
+- Command-based runs (`/agent ...` and aliases) emit start/finish notifications in the chat area so long-running work is visible.
 
 ### Agent files
 Discovery order (by name override):

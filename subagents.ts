@@ -437,6 +437,11 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		const startedAt = Date.now();
+		if (ctx.hasUI) {
+			ctx.ui.notify(`Running ${agentName}...`, "info");
+		}
+
 		const result = await runSingleAgent(
 			ctx.cwd,
 			discovery.agents,
@@ -463,8 +468,13 @@ export default function (pi: ExtensionAPI) {
 			details: { result },
 		});
 
-		if (result.exitCode !== 0 && ctx.hasUI) {
-			ctx.ui.notify(`Agent ${agentName} failed`, "error");
+		if (ctx.hasUI) {
+			const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+			if (result.exitCode !== 0) {
+				ctx.ui.notify(`Agent ${agentName} failed (${seconds}s)`, "error");
+			} else {
+				ctx.ui.notify(`Agent ${agentName} finished (${seconds}s)`, "info");
+			}
 		}
 	};
 
