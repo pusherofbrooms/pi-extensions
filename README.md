@@ -5,6 +5,7 @@ This repo contains lightweight global extensions for Pi:
 1. **`show-system-prompt.ts`**
 2. **`web-tools.ts`**
 3. **`guardrails.ts`**
+4. **`subagents.ts`**
 
 ## Installation
 
@@ -79,6 +80,45 @@ Adds lightweight runtime safety checks without changing day-to-day workflow.
 - Safe/normal commands: no prompt.
 - Dangerous bash command in interactive mode: **one-time allow** prompt.
 - Dangerous bash command in non-interactive mode: blocked by default.
+
+## 4) `subagents`
+Adds two tools:
+
+- **`subagent`**: runs named agents in isolated in-memory sessions (single, parallel, chain).
+- **`experiment_loop`**: orchestrates iterative experiments using a worker subagent plus deterministic evaluation command.
+
+### Agent files
+Discovery order (by name override):
+
+1. Built-in defaults from this package (`scout`, `planner`, `worker`, `reviewer`)
+2. User agents: `~/.pi/agent/agents/*.md`
+3. Project agents (optional): `.pi/agents/*.md`
+
+Frontmatter format:
+
+```md
+---
+name: worker
+description: General-purpose implementation agent
+tools: read, grep, find, ls, bash, edit, write
+# model: provider/model-id   # optional
+---
+
+You are a focused coding worker...
+```
+
+If `model` is omitted, subagents use the current session model.
+
+### Loop safety model
+`experiment_loop` defaults to a single iteration (`mode: "once"`).
+If `mode: "loop"` is used, at least one explicit stop condition is required:
+
+- `maxIterations`
+- `maxDurationMinutes`
+- `maxNoImprove`
+- `targetMetric`
+
+Results are appended to `.pi/experiment-results.jsonl` by default.
 
 ## Testing
 

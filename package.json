@@ -9,7 +9,8 @@
     "extensions": [
       "./guardrails.ts",
       "./show-system-prompt.ts",
-      "./web-tools.ts"
+      "./web-tools.ts",
+      "./subagents.ts"
     ]
   }
 }
