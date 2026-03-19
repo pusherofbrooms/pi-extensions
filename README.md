@@ -8,35 +8,24 @@ This repo contains lightweight global extensions for Pi:
 
 ## Installation
 
-These are global Pi extensions loaded from your extensions directory.
-
-### Option 1: Copy individual extension files (safest)
-
-Copy any `.ts` extension file you want into:
-
-- `~/.pi/agent/extensions`
-
-### Option 2: Use this repo as your extensions directory
-
-If you want this repo to be your full global extensions folder:
+Install as a Pi package from git (recommended):
 
 ```bash
-git clone git@github.com:pusherofbrooms/pi-extensions.git ~/.pi/agent/extensions
+pi install git:github.com/pusherofbrooms/pi-extensions
 ```
 
-If the directory already exists and is already a git repo:
-
-```bash
-cd ~/.pi/agent/extensions
-git remote add origin git@github.com:pusherofbrooms/pi-extensions.git
-git pull origin main
-```
+This keeps your own `~/.pi/agent/extensions` directory clean and lets these extensions cohabitate with other installed packages.
 
 ## Updating
 
 ```bash
-cd ~/.pi/agent/extensions
-git pull --ff-only
+pi update
+```
+
+## Uninstall
+
+```bash
+pi remove git:github.com/pusherofbrooms/pi-extensions
 ```
 
 > Set provider API keys in your shell environment (not in this repo).
