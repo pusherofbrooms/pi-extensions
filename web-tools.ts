@@ -306,6 +306,9 @@ function htmlToText(html: string): string {
   return decodeEntities(stripped)
     .replace(/\r/g, "")
     .replace(/[ \t]+/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
