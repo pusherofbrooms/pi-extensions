@@ -281,6 +281,14 @@ async function runSearch(query: string, limit: number): Promise<{ provider: Sear
 
 function decodeEntities(text: string): string {
   return text
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const codePoint = Number.parseInt(hex, 16);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _;
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const codePoint = Number.parseInt(dec, 10);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _;
+    })
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
@@ -451,14 +459,13 @@ export default function (pi: ExtensionAPI) {
         page.title ? `Title: ${page.title}` : undefined,
         `Status: ${page.status}`,
         `Content-Type: ${page.contentType || "unknown"}`,
-        "",
       ]
         .filter(Boolean)
         .join("\n");
 
       const text = page.truncationNote
-        ? `${header}${page.text}\n\n[${page.truncationNote}]`
-        : `${header}${page.text}`;
+        ? `${header}\n\n${page.text}\n\n[${page.truncationNote}]`
+        : `${header}\n\n${page.text}`;
 
       return {
         content: [{ type: "text", text }],
