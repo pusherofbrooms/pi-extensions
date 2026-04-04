@@ -543,6 +543,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description:
 			"Delegate tasks to specialized subagents with isolated in-memory context. Modes: single (agent+task), parallel (tasks), chain (steps with {previous} placeholder).",
+		promptSnippet: "Delegate work to named subagents in isolated sessions (single, parallel, or chain modes).",
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
@@ -696,6 +697,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Experiment Loop",
 		description:
 			"Run one or more experiment iterations using a worker subagent plus deterministic evaluation command. Loop mode requires explicit stop conditions.",
+		promptSnippet: "Run iterative experiments with a worker subagent and evaluate each run via a deterministic metric command.",
 		parameters: ExperimentParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const mode = params.mode ?? "once";

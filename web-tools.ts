@@ -396,6 +396,7 @@ export default function (pi: ExtensionAPI) {
     label: "Web Search",
     description:
       "Search the public web for recent information. Uses provider set by WEB_SEARCH_PROVIDER (duckduckgo|brave|tavily|serpapi). DuckDuckGo requires no API key; other providers require matching API key env var (BRAVE_API_KEY, TAVILY_API_KEY, or SERPAPI_API_KEY).",
+    promptSnippet: "Search the public web for recent information and return ranked results with snippets.",
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       limit: Type.Optional(
@@ -449,6 +450,7 @@ export default function (pi: ExtensionAPI) {
     label: "Fetch Page",
     description:
       "Fetch a public HTTP(S) URL and extract readable text. Includes SSRF protections (blocks localhost/private IP targets). Output is truncated to 50KB/2000 lines.",
+    promptSnippet: "Fetch a public HTTP(S) URL and extract readable text content with SSRF-safe validation.",
     parameters: Type.Object({
       url: Type.String({ description: "HTTP or HTTPS URL to fetch" }),
     }),
