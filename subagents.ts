@@ -288,13 +288,6 @@ async function runSingleAgent(
 		throw error;
 	}
 	console.error("[subagents] runSingleAgent:before-current", { cwd, inheritedModelLabel });
-		console.error("[subagents] runSingleAgent:ctx-model-error", {
-			cwd,
-			explicitModel: agent.model,
-			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
-		});
-		throw error;
-	}
 	const current: SingleResult = {
 		agent: agentName,
 		agentSource: agent.source,
