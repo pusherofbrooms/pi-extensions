@@ -529,7 +529,34 @@ export default function (pi: ExtensionAPI) {
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
-			const discovery = discoverAgents(ctx.cwd, agentScope);
+			let discovery: ReturnType<typeof discoverAgents>;
+			try {
+				discovery = discoverAgents(ctx.cwd, agentScope);
+			} catch (error) {
+				const debug = {
+					error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+					ctx: {
+						cwd: ctx.cwd,
+						hasUI: ctx.hasUI,
+						model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+						signalAborted: signal?.aborted,
+					},
+					params: {
+						agent: params.agent,
+						task: params.task,
+						tasks: params.tasks?.map((t) => ({ agent: t.agent, cwd: t.cwd, taskLength: t.task.length })),
+						chain: params.chain?.map((t) => ({ agent: t.agent, cwd: t.cwd, taskLength: t.task.length })),
+						cwd: params.cwd,
+						agentScope: params.agentScope,
+						confirmProjectAgents: params.confirmProjectAgents,
+					},
+				};
+				return {
+					content: [{ type: "text", text: `subagent debug failure\n${JSON.stringify(debug, null, 2)}` }],
+					details: { mode: "single", agentScope, projectAgentsDir: null, results: [], debug },
+					isError: true,
+				};
+			}
 			const agents = discovery.agents;
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
