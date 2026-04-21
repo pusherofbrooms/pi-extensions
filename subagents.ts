@@ -264,6 +264,27 @@ async function runSingleAgent(
 		tools: agent.tools,
 		model: agent.model,
 	});
+	let inheritedModel: Model<any> | undefined;
+	let inheritedModelLabel: string | undefined;
+	try {
+		console.error("[subagents] runSingleAgent:before-ctx-model", { cwd, explicitModel: agent.model });
+		inheritedModel = ctx.model;
+		console.error("[subagents] runSingleAgent:after-ctx-model", {
+			cwd,
+			hasModel: Boolean(inheritedModel),
+			provider: inheritedModel?.provider,
+			id: inheritedModel?.id,
+		});
+		inheritedModelLabel = inheritedModel ? `${inheritedModel.provider}/${inheritedModel.id}` : undefined;
+		console.error("[subagents] runSingleAgent:ctx-model-label", { cwd, inheritedModelLabel });
+	} catch (error) {
+		console.error("[subagents] runSingleAgent:ctx-model-error", {
+			cwd,
+			explicitModel: agent.model,
+			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+		});
+		throw error;
+	}
 	const current: SingleResult = {
 		agent: agentName,
 		agentSource: agent.source,
@@ -271,7 +292,7 @@ async function runSingleAgent(
 		messages: [],
 		exitCode: 0,
 		usage: defaultUsage(),
-		model: agent.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined),
+		model: agent.model ?? inheritedModelLabel,
 		step,
 	};
 
@@ -297,18 +318,33 @@ async function runSingleAgent(
 	await loader.reload();
 	console.error("[subagents] runSingleAgent:loader-reloaded", { cwd });
 
-	const model = resolveModel(agent.model, ctx) ?? ctx.model;
+	let resolvedModel: Model<any> | undefined;
+	try {
+		console.error("[subagents] runSingleAgent:before-resolveModel", { cwd, explicitModel: agent.model });
+		resolvedModel = resolveModel(agent.model, ctx) ?? inheritedModel;
+		console.error("[subagents] runSingleAgent:after-resolveModel", {
+			cwd,
+			model: resolvedModel ? `${resolvedModel.provider}/${resolvedModel.id}` : undefined,
+		});
+	} catch (error) {
+		console.error("[subagents] runSingleAgent:resolveModel-error", {
+			cwd,
+			explicitModel: agent.model,
+			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+		});
+		throw error;
+	}
 	const tools = getToolNames(agent.tools);
 	console.error("[subagents] runSingleAgent:before-createAgentSession", {
 		cwd,
 		tools,
-		model: model ? `${model.provider}/${model.id}` : undefined,
+		model: resolvedModel ? `${resolvedModel.provider}/${resolvedModel.id}` : undefined,
 	});
 	const { session } = await createAgentSession({
 		cwd,
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(),
-		model,
+		model: resolvedModel,
 		tools,
 	});
 	console.error("[subagents] runSingleAgent:session-created", { cwd });
