@@ -6,13 +6,6 @@ import type { Message, Model } from "@mariozechner/pi-ai";
 import { StringEnum } from "@mariozechner/pi-ai";
 import {
 	createAgentSession,
-	createBashTool,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
 	DefaultResourceLoader,
 	getAgentDir,
 	parseFrontmatter,
@@ -196,19 +189,8 @@ function resolveModel(spec: string | undefined, ctx: Parameters<NonNullable<Exte
 	return ctx.modelRegistry.find(provider, id);
 }
 
-function createToolsForAgent(cwd: string, names?: string[]) {
-	const toolMap = new Map<string, ReturnType<typeof createReadTool>>([
-		["read", createReadTool(cwd)],
-		["bash", createBashTool(cwd)],
-		["edit", createEditTool(cwd)],
-		["write", createWriteTool(cwd)],
-		["grep", createGrepTool(cwd)],
-		["find", createFindTool(cwd)],
-		["ls", createLsTool(cwd)],
-	]);
-
-	const selected = names && names.length > 0 ? names : Array.from(toolMap.keys());
-	return selected.map((name) => toolMap.get(name)).filter(Boolean) as ReturnType<typeof createReadTool>[];
+function getToolNames(names?: string[]) {
+	return names && names.length > 0 ? names : ["read", "bash", "edit", "write", "grep", "find", "ls"];
 }
 
 function formatAgentList(agents: AgentConfig[]): string {
@@ -298,7 +280,7 @@ async function runSingleAgent(
 	await loader.reload();
 
 	const model = resolveModel(agent.model, ctx) ?? ctx.model;
-	const tools = createToolsForAgent(cwd, agent.tools);
+	const tools = getToolNames(agent.tools);
 	const { session } = await createAgentSession({
 		cwd,
 		resourceLoader: loader,
