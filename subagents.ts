@@ -236,6 +236,13 @@ async function runSingleAgent(
 	onUpdate: Parameters<NonNullable<ExtensionAPI["registerTool"]>["0"]["execute"]>[3],
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 ): Promise<SingleResult> {
+	console.error("[subagents] runSingleAgent:start", {
+		defaultCwd,
+		runCwd,
+		agentName,
+		step,
+		taskLength: task.length,
+	});
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) {
 		return {
@@ -251,6 +258,12 @@ async function runSingleAgent(
 	}
 
 	const cwd = runCwd ?? defaultCwd;
+	console.error("[subagents] runSingleAgent:resolved", {
+		cwd,
+		agentSource: agent.source,
+		tools: agent.tools,
+		model: agent.model,
+	});
 	const current: SingleResult = {
 		agent: agentName,
 		agentSource: agent.source,
@@ -270,6 +283,7 @@ async function runSingleAgent(
 		});
 	};
 
+	console.error("[subagents] runSingleAgent:before-loader", { cwd });
 	const loader = new DefaultResourceLoader({
 		cwd,
 		noExtensions: true,
@@ -279,10 +293,17 @@ async function runSingleAgent(
 		systemPromptOverride: () => agent.systemPrompt,
 		appendSystemPromptOverride: () => [],
 	});
+	console.error("[subagents] runSingleAgent:loader-created", { cwd });
 	await loader.reload();
+	console.error("[subagents] runSingleAgent:loader-reloaded", { cwd });
 
 	const model = resolveModel(agent.model, ctx) ?? ctx.model;
 	const tools = getToolNames(agent.tools);
+	console.error("[subagents] runSingleAgent:before-createAgentSession", {
+		cwd,
+		tools,
+		model: model ? `${model.provider}/${model.id}` : undefined,
+	});
 	const { session } = await createAgentSession({
 		cwd,
 		resourceLoader: loader,
@@ -290,6 +311,7 @@ async function runSingleAgent(
 		model,
 		tools,
 	});
+	console.error("[subagents] runSingleAgent:session-created", { cwd });
 
 	const unsubscribe = session.subscribe((event) => {
 		if (event.type === "message_end") {
@@ -327,10 +349,17 @@ async function runSingleAgent(
 	}
 
 	try {
+		console.error("[subagents] runSingleAgent:before-prompt", { cwd, agentName });
 		await session.prompt(task, { source: "extension" });
+		console.error("[subagents] runSingleAgent:after-prompt", { cwd, agentName, stopReason: current.stopReason });
 		const error = current.stopReason === "error" || current.stopReason === "aborted";
 		if (error) current.exitCode = 1;
 	} catch (error) {
+		console.error("[subagents] runSingleAgent:prompt-error", {
+			cwd,
+			agentName,
+			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+		});
 		current.exitCode = 1;
 		current.stderr = (error as Error).message;
 	} finally {
@@ -545,7 +574,13 @@ export default function (pi: ExtensionAPI) {
 				},
 			});
 			const agentScope: AgentScope = params.agentScope ?? "user";
+			console.error("[subagents] execute before-discoverAgents", { cwd: ctx.cwd, agentScope });
 			const discovery = discoverAgents(ctx.cwd, agentScope);
+			console.error("[subagents] execute after-discoverAgents", {
+				cwd: ctx.cwd,
+				agents: discovery.agents.map((a) => ({ name: a.name, source: a.source })),
+				projectAgentsDir: discovery.projectAgentsDir,
+			});
 			const agents = discovery.agents;
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
