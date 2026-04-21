@@ -15,6 +15,8 @@ import {
 import { Type } from "@sinclair/typebox";
 import { improved, parseMetric, validateLoopConfig } from "./subagents-core.mjs";
 
+console.error("[subagents] loaded", { processCwd: process.cwd() });
+
 type AgentScope = "user" | "project" | "both";
 
 interface AgentConfig {
@@ -517,6 +519,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		console.error("[subagents] session_start", { cwd: ctx.cwd, hasUI: ctx.hasUI });
 		registerAliasesForCwd(ctx.cwd);
 	});
 
@@ -528,6 +531,19 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Delegate work to named subagents in isolated sessions (single, parallel, or chain modes).",
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			console.error("[subagents] execute entered", {
+				cwd: ctx.cwd,
+				hasUI: ctx.hasUI,
+				params: {
+					agent: params.agent,
+					task: params.task,
+					tasks: params.tasks?.map((t) => ({ agent: t.agent, cwd: t.cwd, taskLength: t.task.length })),
+					chain: params.chain?.map((t) => ({ agent: t.agent, cwd: t.cwd, taskLength: t.task.length })),
+					cwd: params.cwd,
+					agentScope: params.agentScope,
+					confirmProjectAgents: params.confirmProjectAgents,
+				},
+			});
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
