@@ -272,12 +272,22 @@ async function runSingleAgent(
 		console.error("[subagents] runSingleAgent:after-ctx-model", {
 			cwd,
 			hasModel: Boolean(inheritedModel),
-			provider: inheritedModel?.provider,
-			id: inheritedModel?.id,
 		});
-		inheritedModelLabel = inheritedModel ? `${inheritedModel.provider}/${inheritedModel.id}` : undefined;
+		const inheritedProvider = inheritedModel?.provider;
+		console.error("[subagents] runSingleAgent:ctx-model-provider", { cwd, inheritedProvider });
+		const inheritedId = inheritedModel?.id;
+		console.error("[subagents] runSingleAgent:ctx-model-id", { cwd, inheritedId });
+		inheritedModelLabel = inheritedProvider && inheritedId ? `${inheritedProvider}/${inheritedId}` : undefined;
 		console.error("[subagents] runSingleAgent:ctx-model-label", { cwd, inheritedModelLabel });
 	} catch (error) {
+		console.error("[subagents] runSingleAgent:ctx-model-error", {
+			cwd,
+			explicitModel: agent.model,
+			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+		});
+		throw error;
+	}
+	console.error("[subagents] runSingleAgent:before-current", { cwd, inheritedModelLabel });
 		console.error("[subagents] runSingleAgent:ctx-model-error", {
 			cwd,
 			explicitModel: agent.model,
@@ -295,6 +305,7 @@ async function runSingleAgent(
 		model: agent.model ?? inheritedModelLabel,
 		step,
 	};
+	console.error("[subagents] runSingleAgent:after-current", { cwd, currentModel: current.model });
 
 	const emitUpdate = () => {
 		if (!onUpdate) return;
