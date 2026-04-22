@@ -15,8 +15,6 @@ import {
 import { Type } from "@sinclair/typebox";
 import { improved, parseMetric, validateLoopConfig } from "./subagents-core.mjs";
 
-console.error("[subagents] loaded", { processCwd: process.cwd() });
-
 type AgentScope = "user" | "project" | "both";
 
 interface AgentConfig {
@@ -236,13 +234,6 @@ async function runSingleAgent(
 	onUpdate: Parameters<NonNullable<ExtensionAPI["registerTool"]>["0"]["execute"]>[3],
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 ): Promise<SingleResult> {
-	console.error("[subagents] runSingleAgent:start", {
-		defaultCwd,
-		runCwd,
-		agentName,
-		step,
-		taskLength: task.length,
-	});
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) {
 		return {
@@ -259,37 +250,10 @@ async function runSingleAgent(
 
 	const cwd = runCwd ? path.resolve(defaultCwd, runCwd) : defaultCwd;
 	const agentDir = getAgentDir();
-	console.error("[subagents] runSingleAgent:resolved", {
-		cwd,
-		agentDir,
-		agentSource: agent.source,
-		tools: agent.tools,
-		model: agent.model,
-	});
-	let inheritedModel: Model<any> | undefined;
-	let inheritedModelLabel: string | undefined;
-	try {
-		console.error("[subagents] runSingleAgent:before-ctx-model", { cwd, explicitModel: agent.model });
-		inheritedModel = ctx.model;
-		console.error("[subagents] runSingleAgent:after-ctx-model", {
-			cwd,
-			hasModel: Boolean(inheritedModel),
-		});
-		const inheritedProvider = inheritedModel?.provider;
-		console.error("[subagents] runSingleAgent:ctx-model-provider", { cwd, inheritedProvider });
-		const inheritedId = inheritedModel?.id;
-		console.error("[subagents] runSingleAgent:ctx-model-id", { cwd, inheritedId });
-		inheritedModelLabel = inheritedProvider && inheritedId ? `${inheritedProvider}/${inheritedId}` : undefined;
-		console.error("[subagents] runSingleAgent:ctx-model-label", { cwd, inheritedModelLabel });
-	} catch (error) {
-		console.error("[subagents] runSingleAgent:ctx-model-error", {
-			cwd,
-			explicitModel: agent.model,
-			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
-		});
-		throw error;
-	}
-	console.error("[subagents] runSingleAgent:before-current", { cwd, inheritedModelLabel });
+	const inheritedModel = ctx.model;
+	const inheritedProvider = inheritedModel?.provider;
+	const inheritedId = inheritedModel?.id;
+	const inheritedModelLabel = inheritedProvider && inheritedId ? `${inheritedProvider}/${inheritedId}` : undefined;
 	const current: SingleResult = {
 		agent: agentName,
 		agentSource: agent.source,
@@ -300,7 +264,6 @@ async function runSingleAgent(
 		model: agent.model ?? inheritedModelLabel,
 		step,
 	};
-	console.error("[subagents] runSingleAgent:after-current", { cwd, currentModel: current.model });
 
 	const emitUpdate = () => {
 		if (!onUpdate) return;
@@ -310,7 +273,6 @@ async function runSingleAgent(
 		});
 	};
 
-	console.error("[subagents] runSingleAgent:before-loader", { cwd, agentDir });
 	const loader = new DefaultResourceLoader({
 		cwd,
 		agentDir,
@@ -321,32 +283,10 @@ async function runSingleAgent(
 		systemPromptOverride: () => agent.systemPrompt,
 		appendSystemPromptOverride: () => [],
 	});
-	console.error("[subagents] runSingleAgent:loader-created", { cwd });
 	await loader.reload();
-	console.error("[subagents] runSingleAgent:loader-reloaded", { cwd });
 
-	let resolvedModel: Model<any> | undefined;
-	try {
-		console.error("[subagents] runSingleAgent:before-resolveModel", { cwd, explicitModel: agent.model });
-		resolvedModel = resolveModel(agent.model, ctx) ?? inheritedModel;
-		console.error("[subagents] runSingleAgent:after-resolveModel", {
-			cwd,
-			model: resolvedModel ? `${resolvedModel.provider}/${resolvedModel.id}` : undefined,
-		});
-	} catch (error) {
-		console.error("[subagents] runSingleAgent:resolveModel-error", {
-			cwd,
-			explicitModel: agent.model,
-			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
-		});
-		throw error;
-	}
+	const resolvedModel = resolveModel(agent.model, ctx) ?? inheritedModel;
 	const tools = getToolNames(agent.tools);
-	console.error("[subagents] runSingleAgent:before-createAgentSession", {
-		cwd,
-		tools,
-		model: resolvedModel ? `${resolvedModel.provider}/${resolvedModel.id}` : undefined,
-	});
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir,
@@ -355,7 +295,6 @@ async function runSingleAgent(
 		model: resolvedModel,
 		tools,
 	});
-	console.error("[subagents] runSingleAgent:session-created", { cwd });
 
 	const unsubscribe = session.subscribe((event) => {
 		if (event.type === "message_end") {
@@ -393,17 +332,10 @@ async function runSingleAgent(
 	}
 
 	try {
-		console.error("[subagents] runSingleAgent:before-prompt", { cwd, agentName });
 		await session.prompt(task, { source: "extension" });
-		console.error("[subagents] runSingleAgent:after-prompt", { cwd, agentName, stopReason: current.stopReason });
 		const error = current.stopReason === "error" || current.stopReason === "aborted";
 		if (error) current.exitCode = 1;
 	} catch (error) {
-		console.error("[subagents] runSingleAgent:prompt-error", {
-			cwd,
-			agentName,
-			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
-		});
 		current.exitCode = 1;
 		current.stderr = (error as Error).message;
 	} finally {
@@ -592,7 +524,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		console.error("[subagents] session_start", { cwd: ctx.cwd, hasUI: ctx.hasUI });
 		registerAliasesForCwd(ctx.cwd);
 	});
 
@@ -604,27 +535,8 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Delegate work to named subagents in isolated sessions (single, parallel, or chain modes).",
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			console.error("[subagents] execute entered", {
-				cwd: ctx.cwd,
-				hasUI: ctx.hasUI,
-				params: {
-					agent: params.agent,
-					task: params.task,
-					tasks: params.tasks?.map((t) => ({ agent: t.agent, cwd: t.cwd, taskLength: t.task.length })),
-					chain: params.chain?.map((t) => ({ agent: t.agent, cwd: t.cwd, taskLength: t.task.length })),
-					cwd: params.cwd,
-					agentScope: params.agentScope,
-					confirmProjectAgents: params.confirmProjectAgents,
-				},
-			});
 			const agentScope: AgentScope = params.agentScope ?? "user";
-			console.error("[subagents] execute before-discoverAgents", { cwd: ctx.cwd, agentScope });
 			const discovery = discoverAgents(ctx.cwd, agentScope);
-			console.error("[subagents] execute after-discoverAgents", {
-				cwd: ctx.cwd,
-				agents: discovery.agents.map((a) => ({ name: a.name, source: a.source })),
-				projectAgentsDir: discovery.projectAgentsDir,
-			});
 			const agents = discovery.agents;
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
