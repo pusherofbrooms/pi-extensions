@@ -257,9 +257,11 @@ async function runSingleAgent(
 		};
 	}
 
-	const cwd = runCwd ?? defaultCwd;
+	const cwd = runCwd ? path.resolve(defaultCwd, runCwd) : defaultCwd;
+	const agentDir = getAgentDir();
 	console.error("[subagents] runSingleAgent:resolved", {
 		cwd,
+		agentDir,
 		agentSource: agent.source,
 		tools: agent.tools,
 		model: agent.model,
@@ -308,9 +310,10 @@ async function runSingleAgent(
 		});
 	};
 
-	console.error("[subagents] runSingleAgent:before-loader", { cwd });
+	console.error("[subagents] runSingleAgent:before-loader", { cwd, agentDir });
 	const loader = new DefaultResourceLoader({
 		cwd,
+		agentDir,
 		noExtensions: true,
 		noSkills: true,
 		noPromptTemplates: true,
@@ -346,8 +349,9 @@ async function runSingleAgent(
 	});
 	const { session } = await createAgentSession({
 		cwd,
+		agentDir,
 		resourceLoader: loader,
-		sessionManager: SessionManager.inMemory(),
+		sessionManager: SessionManager.inMemory(cwd),
 		model: resolvedModel,
 		tools,
 	});
