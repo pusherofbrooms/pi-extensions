@@ -10,7 +10,8 @@
       "./guardrails.ts",
       "./show-system-prompt.ts",
       "./web-tools.ts",
-      "./subagents.ts"
+      "./subagents.ts",
+      "./openai-codex-image-gen.ts"
     ]
   }
 }
