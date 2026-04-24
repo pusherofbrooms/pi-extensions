@@ -326,6 +326,7 @@ export default function openaiCodexImageGen(pi: ExtensionAPI) {
 		label: "Generate OpenAI image",
 		description:
 			"Generate an image through the ChatGPT/Codex backend using the existing openai-codex OAuth login. Returns the image as a tool result attachment. Optional saving via save=project|global|custom|none.",
+		promptSnippet: "Generate an image from a text prompt using OpenAI Codex OAuth credentials.",
 		parameters: TOOL_PARAMS,
 		async execute(_toolCallId, params: ToolParams, signal, onUpdate, ctx) {
 			const token = await getOpenAICodexToken(ctx);
