@@ -82,10 +82,9 @@ Adds lightweight runtime safety checks without changing day-to-day workflow.
 - Dangerous bash command in non-interactive mode: blocked by default.
 
 ## 4) `subagents`
-Adds two tools and command helpers:
+Adds a subagent tool and command helpers:
 
 - **`subagent`**: runs named agents in isolated in-memory sessions (single, parallel, chain).
-- **`experiment_loop`**: orchestrates iterative experiments using a worker subagent plus deterministic evaluation command.
 - **`/agents`**: lists discovered agents and their source.
 - **`/agent <name> <task>`**: run any discovered agent by name.
 - Dynamic aliases like **`/scout ...`** or **`/worker ...`** are auto-registered when command names do not conflict.
@@ -112,17 +111,6 @@ You are a focused coding worker...
 ```
 
 If `model` is omitted, subagents use the current session model.
-
-### Loop safety model
-`experiment_loop` defaults to a single iteration (`mode: "once"`).
-If `mode: "loop"` is used, at least one explicit stop condition is required:
-
-- `maxIterations`
-- `maxDurationMinutes`
-- `maxNoImprove`
-- `targetMetric`
-
-Results are appended to `.pi/experiment-results.jsonl` by default.
 
 ## Testing
 

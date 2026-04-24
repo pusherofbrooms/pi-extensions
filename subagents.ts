@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Message, Model } from "@mariozechner/pi-ai";
@@ -13,7 +12,6 @@ import {
 	type ExtensionAPI,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { improved, parseMetric, validateLoopConfig } from "./subagents-core.mjs";
 
 type AgentScope = "user" | "project" | "both";
 
@@ -375,32 +373,9 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 });
 
-const ExperimentParams = Type.Object({
-	plannerTask: Type.String({ description: "Instruction for the worker agent each iteration" }),
-	runCommand: Type.String({ description: "Deterministic command used to evaluate this iteration" }),
-	metricRegex: Type.String({ description: "Regex with capture group for metric extraction, e.g. '^val_bpb:\\s*([0-9.]+)'" }),
-	objective: StringEnum(["min", "max"] as const, {
-		description: "Optimization objective for metric",
-		default: "min",
-	}),
-	mode: Type.Optional(StringEnum(["once", "loop"] as const, { default: "once" })),
-	maxIterations: Type.Optional(Type.Number({ minimum: 1, maximum: 500 })),
-	maxDurationMinutes: Type.Optional(Type.Number({ minimum: 1, maximum: 24 * 60 })),
-	maxNoImprove: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
-	targetMetric: Type.Optional(Type.Number({ description: "Stop once this target metric is reached" })),
-	workerAgent: Type.Optional(Type.String({ default: "worker" })),
-	agentScope: Type.Optional(AgentScopeSchema),
-	cwd: Type.Optional(Type.String({ description: "Working directory" })),
-	timeoutSeconds: Type.Optional(Type.Number({ minimum: 5, maximum: 3600, default: 600 })),
-	iterationSetupCommand: Type.Optional(Type.String({ description: "Optional command run before each iteration" })),
-	onKeepCommand: Type.Optional(Type.String({ description: "Optional command run when metric improves" })),
-	onDiscardCommand: Type.Optional(Type.String({ description: "Optional command run when metric does not improve" })),
-	resultsFile: Type.Optional(Type.String({ description: "Relative or absolute JSONL results file" })),
-});
-
 export default function (pi: ExtensionAPI) {
 	const registeredAliasCommands = new Set<string>();
-	const reservedCommandNames = new Set(["agent", "agents", "subagent", "experiment_loop"]);
+	const reservedCommandNames = new Set(["agent", "agents", "subagent"]);
 
 	const runAgentCommand = async (agentName: string, task: string, ctx: any) => {
 		if (!task.trim()) {
@@ -681,160 +656,4 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
-		name: "experiment_loop",
-		label: "Experiment Loop",
-		description:
-			"Run one or more experiment iterations using a worker subagent plus deterministic evaluation command. Loop mode requires explicit stop conditions.",
-		promptSnippet: "Run iterative experiments with a worker subagent and evaluate each run via a deterministic metric command.",
-		parameters: ExperimentParams,
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const mode = params.mode ?? "once";
-			const objective = params.objective ?? "min";
-			const maxIterations = mode === "once" ? 1 : params.maxIterations;
-			const loopConfigError = validateLoopConfig(mode, params);
-			if (loopConfigError) {
-				return {
-					content: [{ type: "text", text: loopConfigError }],
-					isError: true,
-				};
-			}
-
-			const cwd = params.cwd ?? ctx.cwd;
-			const timeoutMs = Math.floor((params.timeoutSeconds ?? 600) * 1000);
-			const workerAgent = params.workerAgent ?? "worker";
-			const agentScope: AgentScope = params.agentScope ?? "user";
-			const discovery = discoverAgents(ctx.cwd, agentScope);
-			const startedAt = Date.now();
-			const maxDurationMs = params.maxDurationMinutes ? params.maxDurationMinutes * 60_000 : undefined;
-			const resultsPath = path.isAbsolute(params.resultsFile ?? "")
-				? (params.resultsFile as string)
-				: path.join(cwd, params.resultsFile ?? ".pi/experiment-results.jsonl");
-
-			await mkdir(path.dirname(resultsPath), { recursive: true });
-
-			let bestMetric: number | undefined;
-			let iterations = 0;
-			let noImproveStreak = 0;
-			const detailsResults: SingleResult[] = [];
-
-			while (true) {
-				if (signal?.aborted) {
-					return { content: [{ type: "text", text: "Experiment loop aborted." }], details: { mode: "loop", agentScope, projectAgentsDir: discovery.projectAgentsDir, results: detailsResults, loop: { iterations, bestMetric, objective } } };
-				}
-
-				if (maxIterations && iterations >= maxIterations) break;
-				if (maxDurationMs && Date.now() - startedAt >= maxDurationMs) break;
-				if (params.maxNoImprove && noImproveStreak >= params.maxNoImprove) break;
-				if (params.targetMetric !== undefined && bestMetric !== undefined) {
-					const met = objective === "min" ? bestMetric <= params.targetMetric : bestMetric >= params.targetMetric;
-					if (met) break;
-				}
-
-				const iteration = iterations + 1;
-				if (params.iterationSetupCommand) {
-					await pi.exec("bash", ["-lc", params.iterationSetupCommand], { cwd, signal, timeout: timeoutMs });
-				}
-
-				const task = [
-					params.plannerTask,
-					"",
-					`Iteration: ${iteration}`,
-					bestMetric === undefined ? "Current best: none" : `Current best: ${bestMetric}`,
-					"Apply exactly one experiment change, then stop.",
-				].join("\n");
-
-				const agentRun = await runSingleAgent(
-					ctx.cwd,
-					discovery.agents,
-					workerAgent,
-					task,
-					cwd,
-					iteration,
-					signal,
-					ctx,
-					onUpdate,
-					(results) => ({
-						mode: "loop",
-						agentScope,
-						projectAgentsDir: discovery.projectAgentsDir,
-						results,
-						loop: { iterations: iteration, bestMetric, objective },
-					}),
-				);
-				detailsResults.push(agentRun);
-
-				const evalResult = await pi.exec("bash", ["-lc", params.runCommand], {
-					cwd,
-					signal,
-					timeout: timeoutMs,
-				});
-
-				const output = `${evalResult.stdout}\n${evalResult.stderr}`;
-				const metric = parseMetric(output, params.metricRegex);
-				const keep = metric !== undefined && improved(objective, metric, bestMetric);
-				if (keep && metric !== undefined) {
-					bestMetric = metric;
-					noImproveStreak = 0;
-					if (params.onKeepCommand) {
-						await pi.exec("bash", ["-lc", params.onKeepCommand], { cwd, signal, timeout: timeoutMs });
-					}
-				} else {
-					noImproveStreak += 1;
-					if (params.onDiscardCommand) {
-						await pi.exec("bash", ["-lc", params.onDiscardCommand], { cwd, signal, timeout: timeoutMs });
-					}
-				}
-
-				const logRecord = {
-					ts: new Date().toISOString(),
-					iteration,
-					metric,
-					keep,
-					bestMetric,
-					exitCode: evalResult.code,
-					workerAgent,
-				};
-				await appendFile(resultsPath, `${JSON.stringify(logRecord)}\n`, "utf8");
-
-				iterations += 1;
-
-				if (onUpdate) {
-					onUpdate({
-						content: [
-							{
-								type: "text",
-								text: `Iteration ${iteration}: metric=${metric ?? "n/a"} ${keep ? "(improved)" : "(not improved)"}`,
-							},
-						],
-						details: {
-							mode: "loop",
-							agentScope,
-							projectAgentsDir: discovery.projectAgentsDir,
-							results: detailsResults,
-							loop: { iterations, bestMetric, objective },
-						},
-					});
-				}
-
-				if (mode === "once") break;
-			}
-
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Experiment loop finished after ${iterations} iteration(s). Best metric: ${bestMetric ?? "n/a"}. Results: ${resultsPath}`,
-					},
-				],
-				details: {
-					mode: "loop",
-					agentScope,
-					projectAgentsDir: discovery.projectAgentsDir,
-					results: detailsResults,
-					loop: { iterations, bestMetric, objective },
-				},
-			};
-		},
-	});
 }
