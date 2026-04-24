@@ -5,7 +5,7 @@ import {
   formatSize,
   truncateHead,
 } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { lookup } from "node:dns/promises";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,7 +28,7 @@ const BLOCKED_HOSTS = new Set([
 
 function getSearchProvider(): SearchProvider {
   const value = (process.env.WEB_SEARCH_PROVIDER ?? "duckduckgo").toLowerCase();
-  if (value === "tavily" || value === "serpapi" || value === "duckduckgo" || value === "ddg") {
+  if (value === "brave" || value === "tavily" || value === "serpapi" || value === "duckduckgo" || value === "ddg") {
     return value === "ddg" ? "duckduckgo" : value;
   }
   return "duckduckgo";
@@ -327,7 +327,7 @@ function extractTitle(html: string): string | undefined {
   return decodeEntities(match[1].replace(/\s+/g, " ").trim());
 }
 
-async function fetchPage(url: string): Promise<{
+async function fetchPage(url: string, signal?: AbortSignal): Promise<{
   url: string;
   title?: string;
   contentType: string;
@@ -336,21 +336,38 @@ async function fetchPage(url: string): Promise<{
   truncated: boolean;
   truncationNote?: string;
 }> {
-  const validated = await assertSafePublicUrl(url);
   const timeoutMs = getTimeoutMs();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
 
   try {
-    const response = await fetch(validated.toString(), {
-      method: "GET",
-      redirect: "follow",
-      signal: controller.signal,
-      headers: {
-        "User-Agent": process.env.WEB_TOOL_USER_AGENT ?? "pi-web-tools/0.1",
-        Accept: "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
-      },
-    });
+    let currentUrl = await assertSafePublicUrl(url);
+    let response: Response | undefined;
+
+    for (let redirects = 0; redirects <= 5; redirects++) {
+      response = await fetch(currentUrl.toString(), {
+        method: "GET",
+        redirect: "manual",
+        signal: requestSignal,
+        headers: {
+          "User-Agent": process.env.WEB_TOOL_USER_AGENT ?? "pi-web-tools/0.1",
+          Accept: "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
+        },
+      });
+
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+
+      const location = response.headers.get("location");
+      if (!location) break;
+      currentUrl = await assertSafePublicUrl(new URL(location, currentUrl).toString());
+    }
+
+    if (!response) throw new Error("No response received.");
+
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      throw new Error("Too many redirects while fetching page.");
+    }
 
     if (!response.ok) {
       throw new Error(`Failed to fetch page: HTTP ${response.status} ${response.statusText}`);
@@ -454,8 +471,8 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       url: Type.String({ description: "HTTP or HTTPS URL to fetch" }),
     }),
-    async execute(_toolCallId, params) {
-      const page = await fetchPage(params.url);
+    async execute(_toolCallId, params, signal) {
+      const page = await fetchPage(params.url, signal);
       const header = [
         `Fetched: ${page.url}`,
         page.title ? `Title: ${page.title}` : undefined,

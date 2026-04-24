@@ -6,6 +6,7 @@ This repo contains lightweight global extensions for Pi:
 2. **`web-tools.ts`**
 3. **`guardrails.ts`**
 4. **`subagents.ts`**
+5. **`openai-codex-image-gen.ts`**
 
 ## Installation
 
@@ -111,6 +112,13 @@ You are a focused coding worker...
 ```
 
 If `model` is omitted, subagents use the current session model.
+
+## 5) `openai-codex-image-gen`
+Adds **`generate_openai_image`**, an image-generation tool that uses Pi's existing `openai-codex` OAuth credentials.
+
+- Authenticate with `/login` for the OpenAI Codex provider first.
+- Default save mode is `none`; use `save=project`, `save=global`, or `save=custom` to write PNG files.
+- Optional environment/config knobs: `PI_OPENAI_IMAGE_SAVE_MODE`, `PI_OPENAI_IMAGE_SAVE_DIR`, `PI_OPENAI_IMAGE_MODEL`.
 
 ## Testing
 

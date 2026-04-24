@@ -11,7 +11,7 @@ import {
 	SessionManager,
 	type ExtensionAPI,
 } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 type AgentScope = "user" | "project" | "both";
 
@@ -537,7 +537,6 @@ export default function (pi: ExtensionAPI) {
 						},
 					],
 					details: makeDetails("single")([]),
-					isError: true,
 				};
 			}
 
@@ -588,7 +587,6 @@ export default function (pi: ExtensionAPI) {
 						return {
 							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}).` }],
 							details: makeDetails("chain")(results),
-							isError: true,
 						};
 					}
 					previousOutput = getFinalOutput(result.messages);
@@ -609,7 +607,6 @@ export default function (pi: ExtensionAPI) {
 							},
 						],
 						details: makeDetails("parallel")([]),
-						isError: true,
 					};
 				}
 
@@ -623,7 +620,6 @@ export default function (pi: ExtensionAPI) {
 						{ type: "text", text: `Parallel complete: ${successCount}/${results.length} succeeded.` },
 					],
 					details: makeDetails("parallel")(results),
-					isError: successCount !== results.length,
 				};
 			}
 
@@ -644,14 +640,12 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: getFinalOutput(result.messages) || result.stderr || "(no output)" }],
 					details: makeDetails("single")([result]),
-					isError: result.exitCode !== 0,
 				};
 			}
 
 			return {
 				content: [{ type: "text", text: `Invalid parameters. Available agents: ${formatAgentList(agents)}` }],
 				details: makeDetails("single")([]),
-				isError: true,
 			};
 		},
 	});

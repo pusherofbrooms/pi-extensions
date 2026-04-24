@@ -1,5 +1,5 @@
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
@@ -8,7 +8,7 @@ export default function (pi: ExtensionAPI) {
         handler: async (args, ctx) => {
             const prompt = ctx.getSystemPrompt();
 
-            // Non-interactive modes (print/rpc): just print
+            // Non-UI modes (print/json): just print.
             if (!ctx.hasUI) {
                 console.log(prompt);
                 return;
@@ -16,6 +16,7 @@ export default function (pi: ExtensionAPI) {
 
             if (args.trim() === "save") {
                 const outPath = join(ctx.cwd, ".pi", "system-prompt.snapshot.md");
+                await mkdir(dirname(outPath), { recursive: true });
                 await writeFile(outPath, prompt, "utf-8");
                 ctx.ui.notify(`Saved system prompt to ${outPath}`, "info");
                 return;
