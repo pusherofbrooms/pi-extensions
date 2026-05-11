@@ -185,7 +185,7 @@ function renderGoalForModel(goal: StoredGoal): string {
 }
 
 function updateStatus(ctx: ExtensionContext, goal?: StoredGoal): void {
-  if (!goal || goal.status === "cleared") {
+  if (!goal || goal.status === "complete" || goal.status === "cleared") {
     ctx.ui.setStatus("goal", "");
     return;
   }
