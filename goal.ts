@@ -113,6 +113,17 @@ function parseCreateArgs(args: string): { objective: string; maxIterations?: num
   return { maxIterations: Number.parseInt(match[1], 10), objective: match[2].trim() };
 }
 
+function extendMaxIterations(goal: StoredGoal, additionalIterations: number): StoredGoal {
+  const currentCap = goal.maxIterations ?? goal.stepCount;
+  return {
+    ...goal,
+    status: goal.status === "paused" && goal.stopReason === "maxIterationsReached" ? "active" : goal.status,
+    stopReason: goal.stopReason === "maxIterationsReached" ? undefined : goal.stopReason,
+    maxIterations: Math.max(goal.stepCount, currentCap) + additionalIterations,
+    continuationQueued: false,
+  };
+}
+
 async function readGoalById(id: string): Promise<StoredGoal | undefined> {
   return readJson<StoredGoal>(goalPath(id));
 }
@@ -252,6 +263,24 @@ export default function goalExtension(pi: ExtensionAPI) {
         updateStatus(ctx, goal);
         ctx.ui.notify("Goal resumed; queuing continuation.", "info");
         queueContinuation(pi, ctx, goal);
+        return;
+      }
+
+      if (subcommand === "more" || subcommand === "--more") {
+        const value = trimmed.slice(subcommand.length).trim();
+        const additionalIterations = parsePositiveInt(value);
+        if (!additionalIterations) {
+          ctx.ui.notify("Usage: /goal more <positive-number>", "warning");
+          return;
+        }
+        const goal = await mutateCurrentGoal(ctx.cwd, (current) => extendMaxIterations(current, additionalIterations));
+        updateStatus(ctx, goal);
+        if (!goal) {
+          ctx.ui.notify("No current goal found.", "warning");
+          return;
+        }
+        ctx.ui.notify(`Goal max iterations extended to ${goal.maxIterations}.`, "info");
+        if (goal.status === "active") queueContinuation(pi, ctx, goal);
         return;
       }
 

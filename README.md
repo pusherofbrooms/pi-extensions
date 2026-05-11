@@ -131,6 +131,7 @@ Commands:
 - `/goal` or `/goal status` shows current goal state.
 - `/goal pause`, `/goal resume`, `/goal clear`, `/goal complete` control status.
 - `/goal max <n>` or `/goal max none` adjusts the current cap.
+- `/goal more <n>` or `/goal --more <n>` adds N more iterations to the current cap; if the goal was paused because it reached the cap, this resumes and queues continuation.
 
 The extension stores durable goal state under `~/.pi/agent/goals/` with a single index file mapping projects to current goals. It exposes `get_goal`, `goal_note`, and `update_goal` tools, and queues visible follow-up turns until the goal is complete, paused, cleared, or max iterations are reached. The model updates progress through `goal_note` rather than editing extension-owned lifecycle state.
 
