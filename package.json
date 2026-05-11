@@ -11,7 +11,8 @@
       "./show-system-prompt.ts",
       "./web-tools.ts",
       "./subagents.ts",
-      "./openai-codex-image-gen.ts"
+      "./openai-codex-image-gen.ts",
+      "./goal.ts"
     ]
   }
 }
