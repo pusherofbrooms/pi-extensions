@@ -132,8 +132,11 @@ Commands:
 - `/goal pause`, `/goal resume`, `/goal clear`, `/goal complete` control status.
 - `/goal max <n>` or `/goal max none` adjusts the current cap.
 - `/goal more <n>` or `/goal --more <n>` adds N more iterations to the current cap; if the goal was paused because it reached the cap, this resumes and queues continuation.
+- `/goal review-every <n>` or `/goal review-every none` enables/disables periodic strategic review prompts.
 
-The extension stores durable goal state under `~/.pi/agent/goals/` with a single index file mapping projects to current goals. It exposes `get_goal`, `goal_note`, and `update_goal` tools, and queues visible follow-up turns until the goal is complete, paused, cleared, or max iterations are reached. The model updates progress through `goal_note` rather than editing extension-owned lifecycle state.
+The extension stores durable goal state under `~/.pi/agent/goals/` with a single index file mapping projects to current goals. It exposes `get_goal`, `goal_note`, `goal_criteria`, `goal_criterion_update`, `goal_review`, `goal_block`, and `update_goal` tools, and queues visible follow-up turns until the goal is complete, paused, blocked, cleared, or max iterations are reached. The model updates progress through tools rather than editing extension-owned lifecycle state.
+
+For long-horizon goals, the model can define evidence-bearing success criteria, update criterion status as evidence is gathered, record structured facts/assumptions/risks/blockers/evidence, and perform terminal reviews. `update_goal` refuses model-driven completion until criteria are passed with evidence and the latest review says `ready_to_complete`.
 
 ## Testing
 
@@ -147,6 +150,7 @@ nix develop --command node --test tests/*.test.mjs
 
 Current tests:
 - `tests/guardrails-core.test.mjs` (secret/dangerous-command detection)
+- `tests/goal-core.test.mjs` (goal criteria/review readiness helpers)
 
 Recommended test strategy for extensions:
 1. **Unit tests** for pure logic (regex/policy decision code).
