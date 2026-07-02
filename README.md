@@ -139,6 +139,8 @@ The extension stores durable goal state under `~/.pi/agent/goals/` with a single
 
 For long-horizon goals, the model can define evidence-bearing success criteria, update criterion status as evidence is gathered, record structured facts/assumptions/risks/blockers/evidence, and perform terminal reviews. `update_goal` refuses model-driven completion until criteria are passed with evidence and the latest review says `ready_to_complete`.
 
+The default continuation policy is intentionally generic: make one coherent unit of progress, update durable state, and stop. A coherent unit can be a focused change, bounded investigation, review, or an operating cycle that checks several live concerns and advances one primary concern. Goal state now records a `scaffold` field for future custom scaffolds, but custom scaffold loading is not implemented yet.
+
 ## Testing
 
 This repo includes lightweight unit tests for guardrail detection logic.

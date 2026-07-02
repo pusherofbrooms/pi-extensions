@@ -1,6 +1,7 @@
 export function normalizeGoal(goal) {
   return {
     ...goal,
+    scaffold: typeof goal.scaffold === "string" && goal.scaffold.trim() ? goal.scaffold : "default",
     criteria: Array.isArray(goal.criteria) ? goal.criteria : [],
     reviews: Array.isArray(goal.reviews) ? goal.reviews : [],
     facts: Array.isArray(goal.facts) ? goal.facts : [],

@@ -52,6 +52,7 @@ type StoredGoal = {
   sessionFile?: string;
   status: GoalStatus;
   objective: string;
+  scaffold?: string;
   createdAt: string;
   updatedAt: string;
   stepCount: number;
@@ -191,6 +192,7 @@ function goalSummary(goal: StoredGoal): string {
   return [
     `Goal ${goal.status}: ${goal.objective}`,
     `Goal file: ${goalPath(goal.id)}`,
+    `Scaffold: ${goal.scaffold ?? "default"}`,
     `Step count: ${goal.stepCount}${goal.maxIterations ? ` / ${goal.maxIterations}` : ""}`,
     goal.stopReason ? `Stop reason: ${goal.stopReason}` : undefined,
     goal.summary ? `Summary: ${goal.summary}` : undefined,
@@ -239,7 +241,7 @@ function updateStatus(ctx: ExtensionContext, goal?: StoredGoal): void {
 
 function continuationPrompt(goal: StoredGoal): string {
   const needsReview = !!goal.reviewEvery && goal.stepCount > 0 && goal.stepCount % goal.reviewEvery === 0 && goal.lastReviewStep !== goal.stepCount;
-  return `${needsReview ? "Perform a strategic review of" : "Continue working toward"} the active goal.\n\nUse get_goal first to inspect objective, progress, criteria, evidence, checklist, and next action. Use goal_note after meaningful progress to update summary/checklist/next action/notes. Do not edit goal lifecycle state manually; the extension owns status, timestamps, stepCount, and maxIterations.\n\nGoal:\n<objective>\n${goal.objective}\n</objective>\n\nStep: ${goal.stepCount}${goal.maxIterations ? ` / ${goal.maxIterations}` : ""}\n\nIteration policy:\n- If the objective describes phases, passes, milestones, or numbered steps, treat each as a separate autonomous iteration unless the goal explicitly says otherwise.\n- Complete exactly one meaningful iteration in this turn, then update goal state with the next action and stop.\n- Do not rush ahead into later phases just because they are easy. Leave clear hand-off notes for the next continuation.\n\nBefore acting, compare the current goal state against the original objective and success criteria. Identify the most important remaining gap. Choose exactly one gap to close, investigate, or review this turn. Avoid repeating work that is already done.\n\nIf this is a complex or long-horizon goal and no success criteria exist, use goal_criteria before substantial execution.\n\n${needsReview ? "This is a scheduled strategic review iteration. Do not do broad new execution. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next gap; then call goal_review and/or goal_note.\n\n" : ""}Before deciding the goal is complete, audit the current state against the objective:\n- Identify the concrete deliverables/success criteria.\n- Verify relevant files, command outputs, tests, docs, or other evidence.\n- Treat uncertainty as not complete.\n\nOnly call update_goal with status "complete" after every required phase/pass/milestone is complete, all success criteria are passed with evidence, and goal_review records ready_to_complete. Otherwise call goal_note, goal_review, goal_criterion_update, or goal_block with concise progress, evidence, and next action, then end your response.`;
+  return `${needsReview ? "Perform a strategic review of" : "Continue working toward"} the active goal.\n\nUse get_goal first to inspect objective, progress, criteria, evidence, checklist, and next action. Use goal_note after meaningful progress to update summary/checklist/next action/notes. Do not edit goal lifecycle state manually; the extension owns status, timestamps, stepCount, and maxIterations.\n\nGoal:\n<objective>\n${goal.objective}\n</objective>\n\nStep: ${goal.stepCount}${goal.maxIterations ? ` / ${goal.maxIterations}` : ""}\n\nIteration policy:\n- Complete one coherent unit of progress in this turn, then update goal state with the next action and stop.\n- A coherent unit may be a single focused change, a bounded investigation, a review, or an operating cycle that checks several live concerns and advances one primary concern.\n- If the objective describes phases, passes, milestones, or numbered steps, do not rush ahead into later phases just because they are easy. Leave clear hand-off notes for the next continuation.\n\nBefore acting, compare the current goal state against the original objective and success criteria. Identify the important open concerns, choose a bounded coherent unit for this turn, and avoid repeating work that is already done.\n\nIf this is a complex or long-horizon goal and no success criteria exist, use goal_criteria before substantial execution.\n\n${needsReview ? "This is a scheduled strategic review iteration. Do not do broad new execution. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next operating focus; then call goal_review and/or goal_note.\n\n" : ""}Before deciding the goal is complete, audit the current state against the objective:\n- Identify the concrete deliverables/success criteria.\n- Verify relevant files, command outputs, tests, docs, or other evidence.\n- Treat uncertainty as not complete.\n\nOnly call update_goal with status "complete" after every required phase/pass/milestone is complete, all success criteria are passed with evidence, and goal_review records ready_to_complete. Otherwise call goal_note, goal_review, goal_criterion_update, or goal_block with concise progress, evidence, and next action, then end your response.`;
 }
 
 function queueContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal): void {
@@ -305,7 +307,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       }
 
       if (subcommand === "pause" || subcommand === "complete" || subcommand === "clear") {
-        const status = (subcommand === "clear" ? "cleared" : subcommand) as GoalStatus;
+        const status = (subcommand === "clear" ? "cleared" : subcommand === "pause" ? "paused" : subcommand) as GoalStatus;
         const goal = await mutateCurrentGoal(ctx.cwd, (current) => ({
           ...current,
           status,
@@ -400,6 +402,7 @@ export default function goalExtension(pi: ExtensionAPI) {
         sessionFile: ctx.sessionManager.getSessionFile(),
         status: "active",
         objective,
+        scaffold: "default",
         createdAt: nowIso(),
         updatedAt: nowIso(),
         stepCount: 0,

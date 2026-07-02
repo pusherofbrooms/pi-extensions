@@ -10,6 +10,7 @@ import {
 
 test("normalizeGoal adds new goal fields for old stored goals", () => {
   const goal = normalizeGoal({ id: "g1", status: "active" });
+  assert.equal(goal.scaffold, "default");
   assert.deepEqual(goal.criteria, []);
   assert.deepEqual(goal.reviews, []);
   assert.deepEqual(goal.facts, []);
