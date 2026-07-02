@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
 const MAX_OBJECTIVE_CHARS = 4000;
+const CONTINUATION_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
 const STORE_DIR = join(homedir(), ".pi", "agent", "goals");
 const GOALS_DIR = join(STORE_DIR, "goals");
 const INDEX_PATH = join(STORE_DIR, "index.json");
@@ -246,22 +247,40 @@ function continuationPrompt(goal: StoredGoal): string {
 
 function queueContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal): void {
   if (shuttingDown || goal.status !== "active" || goal.continuationQueued) return;
-  if (ctx.hasPendingMessages()) return;
 
   goal.continuationQueued = true;
   goal.lastContinuationAt = Date.now();
   runtime = goal;
   updateStatus(ctx, goal);
 
-  setTimeout(() => {
-    try {
-      pi.sendUserMessage(continuationPrompt(goal), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
-    } catch (error) {
-      goal.continuationQueued = false;
-      runtime = goal;
-      ctx.ui.notify(`Failed to queue goal continuation: ${(error as Error).message}`, "error");
+  const trySend = (attempt: number) => {
+    if (shuttingDown || runtime?.id !== goal.id || runtime.status !== "active") return;
+
+    const retry = (error?: unknown) => {
+      const delay = CONTINUATION_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        goal.continuationQueued = false;
+        runtime = goal;
+        const suffix = error ? `: ${(error as Error).message}` : ".";
+        ctx.ui.notify(`Failed to queue goal continuation after retries${suffix}`, "error");
+        return;
+      }
+      setTimeout(() => trySend(attempt + 1), delay);
+    };
+
+    if (ctx.hasPendingMessages() || !ctx.isIdle()) {
+      retry();
+      return;
     }
-  }, 0);
+
+    try {
+      pi.sendUserMessage(continuationPrompt(goal));
+    } catch (error) {
+      retry(error);
+    }
+  };
+
+  setTimeout(() => trySend(0), 0);
 }
 
 function checkNoSecrets(value: string | undefined, label: string): string | undefined {
