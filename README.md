@@ -129,6 +129,7 @@ Commands:
 - `/goal <objective>` starts or replaces the active project goal.
 - `/goal --max <n> <objective>` starts with an iteration cap.
 - `/goal` or `/goal status` shows current goal state.
+- `/goal help` shows command help.
 - `/goal pause`, `/goal resume`, `/goal clear`, `/goal complete` control status.
 - `/goal max <n>` or `/goal max none` adjusts the current cap.
 - `/goal more <n>` or `/goal --more <n>` adds N more iterations to the current cap; if the goal was paused because it reached the cap, this resumes and queues continuation.

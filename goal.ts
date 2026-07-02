@@ -268,6 +268,24 @@ function checkNoSecrets(value: string | undefined, label: string): string | unde
   return match ? `${label} contains a possible secret (${match})` : undefined;
 }
 
+function goalHelp(): string {
+  return `Goal commands:
+/goal <objective>                    Start or replace the active project goal.
+/goal --max <n> <objective>          Start a goal with an iteration cap.
+/goal | /goal status                 Show current goal state.
+/goal help                           Show this help.
+/goal pause                          Pause autonomous continuation.
+/goal resume                         Resume and queue continuation.
+/goal clear                          Clear/abandon the current goal.
+/goal complete                       Manually mark the goal complete.
+/goal max <n|none>                   Set or clear the iteration cap.
+/goal more <n> | /goal --more <n>    Add N iterations to the cap; resumes if cap-paused.
+/goal review-every <n|none>          Enable or disable periodic strategic reviews.
+
+Model tools for long-horizon goals:
+get_goal, goal_note, goal_criteria, goal_criterion_update, goal_review, goal_block, update_goal.`;
+}
+
 export default function goalExtension(pi: ExtensionAPI) {
   pi.registerCommand("goal", {
     description: "Set, inspect, pause, resume, clear, or complete a tool-backed autonomous goal.",
@@ -278,6 +296,11 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (!trimmed || subcommand === "status") {
         const goal = await reloadRuntime(ctx);
         ctx.ui.notify(goal ? goalSummary(goal) : "No current goal found.", goal ? "info" : "warning");
+        return;
+      }
+
+      if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+        ctx.ui.notify(goalHelp(), "info");
         return;
       }
 
