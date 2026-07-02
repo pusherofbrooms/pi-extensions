@@ -146,6 +146,26 @@ The default continuation policy is intentionally generic: make one coherent unit
 
 Goal scaffolds customize the continuation method. Built-ins are `default`, `zenith` (gap-closing/review discipline), and `operations` (portfolio management for many spinning plates). Custom scaffolds can be added at `~/.pi/agent/scaffolds/<id>/SCAFFOLD.md` or project-local `.pi/scaffolds/<id>/SCAFFOLD.md`; project scaffolds override user scaffolds, which override bundled scaffolds.
 
+Scaffold files are Markdown with optional simple frontmatter:
+
+```md
+---
+name: operations
+title: Operations / spinning plates
+description: Portfolio management for live systems with several concerns that must stay healthy.
+---
+
+Use this scaffold when a goal has multiple active lanes rather than one linear gap.
+
+Each continuation should:
+1. Briefly inspect important lanes.
+2. Repair any critical broken lane if needed.
+3. Advance one primary lane with a bounded action.
+4. Record lane health, evidence, next triggers, and stop.
+```
+
+Only flat `key: value` frontmatter is parsed. The Markdown body is injected into the goal continuation prompt as the scaffold's operating method.
+
 ## Testing
 
 This repo includes lightweight unit tests for guardrail detection logic.
