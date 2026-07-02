@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { detectSecret } from "./guardrails-core.mjs";
 import { applyCriterionUpdates, completionReadiness, normalizeCriteriaInputs, normalizeGoal, validateReview } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -12,6 +12,8 @@ const MAX_OBJECTIVE_CHARS = 4000;
 const CONTINUATION_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
 const STORE_DIR = join(homedir(), ".pi", "agent", "goals");
 const GOALS_DIR = join(STORE_DIR, "goals");
+const USER_SCAFFOLDS_DIR = join(homedir(), ".pi", "agent", "scaffolds");
+const PROJECT_SCAFFOLDS_DIR = ".pi/scaffolds";
 const INDEX_PATH = join(STORE_DIR, "index.json");
 
 type GoalStatus = "active" | "paused" | "blocked" | "complete" | "cleared";
@@ -85,6 +87,36 @@ let runtime: StoredGoal | undefined;
 let activeGoalTurn: { id: string; startStep: number } | undefined;
 let shuttingDown = false;
 
+type GoalScaffold = {
+  id: string;
+  name: string;
+  description: string;
+  body: string;
+  source: "bundled" | "user" | "project";
+  path?: string;
+};
+
+const BUILTIN_SCAFFOLDS: Record<string, Omit<GoalScaffold, "source">> = {
+  default: {
+    id: "default",
+    name: "Default",
+    description: "Generic coherent progress for ordinary goals.",
+    body: `Make one coherent unit of progress per continuation. A coherent unit may be a focused change, bounded investigation, review, or small operating cycle. Update durable goal state and stop.`,
+  },
+  zenith: {
+    id: "zenith",
+    name: "Zenith-style gap closer",
+    description: "Repeated gap finding, evidence, and stopping discipline for linear long-horizon work.",
+    body: `Use a Zenith-style control loop. Each continuation: inspect current state, compare it to the original objective and success criteria, identify the most important remaining gap, close or investigate one bounded gap, record evidence, and stop. Replan when evidence changes. Do not complete without passed criteria and a ready terminal review.`,
+  },
+  operations: {
+    id: "operations",
+    name: "Operations / spinning plates",
+    description: "Portfolio-style management for live systems with several concerns that must stay healthy.",
+    body: `Use an operations portfolio loop. Maintain multiple lanes in structured goal notes when useful: facts/evidence for current state, assumptions for expected passive progress, risks for fragile lanes, blockers for stopped lanes, and nextAction for the next trigger. Each continuation: briefly inspect important lanes, repair any critical broken lane if needed, advance one primary lane with a bounded action, record lane health/evidence/next triggers, and stop. Do not let the most urgent lane permanently starve strategic lanes.`,
+  },
+};
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -106,6 +138,49 @@ async function ensureStore(): Promise<void> {
 async function readJson<T>(path: string): Promise<T | undefined> {
   if (!existsSync(path)) return undefined;
   return JSON.parse(await readFile(path, "utf8")) as T;
+}
+
+function parseFrontmatter(raw: string): { data: Record<string, string>; body: string } {
+  if (!raw.startsWith("---\n")) return { data: {}, body: raw };
+  const end = raw.indexOf("\n---\n", 4);
+  if (end === -1) return { data: {}, body: raw };
+  const data: Record<string, string> = {};
+  for (const line of raw.slice(4, end).split("\n")) {
+    const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (match) data[match[1]] = match[2].replace(/^['\"]|['\"]$/g, "");
+  }
+  return { data, body: raw.slice(end + 5).trim() };
+}
+
+async function readScaffoldFile(baseDir: string, id: string, source: "user" | "project"): Promise<GoalScaffold | undefined> {
+  const path = join(baseDir, id, "SCAFFOLD.md");
+  if (!existsSync(path)) return undefined;
+  const raw = await readFile(path, "utf8");
+  const { data, body } = parseFrontmatter(raw);
+  return { id: data.name ?? id, name: data.title ?? data.name ?? id, description: data.description ?? "Custom goal scaffold.", body, source, path };
+}
+
+async function loadScaffold(cwd: string, id = "default"): Promise<GoalScaffold> {
+  const project = await readScaffoldFile(join(cwd, PROJECT_SCAFFOLDS_DIR), id, "project");
+  if (project) return project;
+  const user = await readScaffoldFile(USER_SCAFFOLDS_DIR, id, "user");
+  if (user) return user;
+  const builtin = BUILTIN_SCAFFOLDS[id] ?? BUILTIN_SCAFFOLDS.default;
+  return { ...builtin, source: "bundled" };
+}
+
+async function listScaffolds(cwd: string): Promise<GoalScaffold[]> {
+  const byId = new Map<string, GoalScaffold>();
+  for (const scaffold of Object.values(BUILTIN_SCAFFOLDS)) byId.set(scaffold.id, { ...scaffold, source: "bundled" });
+  for (const [base, source] of [[USER_SCAFFOLDS_DIR, "user"], [join(cwd, PROJECT_SCAFFOLDS_DIR), "project"]] as const) {
+    if (!existsSync(base)) continue;
+    for (const entry of await readdir(base, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const scaffold = await readScaffoldFile(base, entry.name, source);
+      if (scaffold) byId.set(scaffold.id, scaffold);
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
@@ -240,9 +315,9 @@ function updateStatus(ctx: ExtensionContext, goal?: StoredGoal): void {
   ctx.ui.setStatus("goal", `goal: ${goal.status} ${goal.stepCount}${cap}`);
 }
 
-function continuationPrompt(goal: StoredGoal): string {
+function continuationPrompt(goal: StoredGoal, scaffold: GoalScaffold): string {
   const needsReview = !!goal.reviewEvery && goal.stepCount > 0 && goal.stepCount % goal.reviewEvery === 0 && goal.lastReviewStep !== goal.stepCount;
-  return `${needsReview ? "Perform a strategic review of" : "Continue working toward"} the active goal.\n\nUse get_goal first to inspect objective, progress, criteria, evidence, checklist, and next action. Use goal_note after meaningful progress to update summary/checklist/next action/notes. Do not edit goal lifecycle state manually; the extension owns status, timestamps, stepCount, and maxIterations.\n\nGoal:\n<objective>\n${goal.objective}\n</objective>\n\nStep: ${goal.stepCount}${goal.maxIterations ? ` / ${goal.maxIterations}` : ""}\n\nIteration policy:\n- Complete one coherent unit of progress in this turn, then update goal state with the next action and stop.\n- A coherent unit may be a single focused change, a bounded investigation, a review, or an operating cycle that checks several live concerns and advances one primary concern.\n- If the objective describes phases, passes, milestones, or numbered steps, do not rush ahead into later phases just because they are easy. Leave clear hand-off notes for the next continuation.\n\nBefore acting, compare the current goal state against the original objective and success criteria. Identify the important open concerns, choose a bounded coherent unit for this turn, and avoid repeating work that is already done.\n\nIf this is a complex or long-horizon goal and no success criteria exist, use goal_criteria before substantial execution.\n\n${needsReview ? "This is a scheduled strategic review iteration. Do not do broad new execution. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next operating focus; then call goal_review and/or goal_note.\n\n" : ""}Before deciding the goal is complete, audit the current state against the objective:\n- Identify the concrete deliverables/success criteria.\n- Verify relevant files, command outputs, tests, docs, or other evidence.\n- Treat uncertainty as not complete.\n\nOnly call update_goal with status "complete" after every required phase/pass/milestone is complete, all success criteria are passed with evidence, and goal_review records ready_to_complete. Otherwise call goal_note, goal_review, goal_criterion_update, or goal_block with concise progress, evidence, and next action, then end your response.`;
+  return `${needsReview ? "Perform a strategic review of" : "Continue working toward"} the active goal.\n\nUse get_goal first to inspect objective, progress, criteria, evidence, checklist, and next action. Use goal_note after meaningful progress to update summary/checklist/next action/notes. Do not edit goal lifecycle state manually; the extension owns status, timestamps, stepCount, and maxIterations.\n\nGoal:\n<objective>\n${goal.objective}\n</objective>\n\nStep: ${goal.stepCount}${goal.maxIterations ? ` / ${goal.maxIterations}` : ""}\n\nScaffold: ${scaffold.id} (${scaffold.source})\n${scaffold.body}\n\nIteration policy:\n- Complete one coherent unit of progress in this turn, then update goal state with the next action and stop.\n- A coherent unit may be a single focused change, a bounded investigation, a review, or an operating cycle that checks several live concerns and advances one primary concern.\n- If the objective describes phases, passes, milestones, or numbered steps, do not rush ahead into later phases just because they are easy. Leave clear hand-off notes for the next continuation.\n\nBefore acting, compare the current goal state against the original objective and success criteria. Identify the important open concerns, choose a bounded coherent unit for this turn, and avoid repeating work that is already done.\n\nIf this is a complex or long-horizon goal and no success criteria exist, use goal_criteria before substantial execution.\n\n${needsReview ? "This is a scheduled strategic review iteration. Do not do broad new execution. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next operating focus; then call goal_review and/or goal_note.\n\n" : ""}Before deciding the goal is complete, audit the current state against the objective:\n- Identify the concrete deliverables/success criteria.\n- Verify relevant files, command outputs, tests, docs, or other evidence.\n- Treat uncertainty as not complete.\n\nOnly call update_goal with status "complete" after every required phase/pass/milestone is complete, all success criteria are passed with evidence, and goal_review records ready_to_complete. Otherwise call goal_note, goal_review, goal_criterion_update, or goal_block with concise progress, evidence, and next action, then end your response.`;
 }
 
 function queueContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal): void {
@@ -253,7 +328,7 @@ function queueContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: Stored
   runtime = goal;
   updateStatus(ctx, goal);
 
-  const trySend = (attempt: number) => {
+  const trySend = async (attempt: number) => {
     if (shuttingDown || runtime?.id !== goal.id || runtime.status !== "active") return;
 
     const retry = (error?: unknown) => {
@@ -274,7 +349,8 @@ function queueContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: Stored
     }
 
     try {
-      pi.sendUserMessage(continuationPrompt(goal));
+      const scaffold = await loadScaffold(ctx.cwd, goal.scaffold ?? "default");
+      pi.sendUserMessage(continuationPrompt(goal, scaffold));
     } catch (error) {
       retry(error);
     }
@@ -302,6 +378,9 @@ function goalHelp(): string {
 /goal max <n|none>                   Set or clear the iteration cap.
 /goal more <n> | /goal --more <n>    Add N iterations to the cap; resumes if cap-paused.
 /goal review-every <n|none>          Enable or disable periodic strategic reviews.
+/goal scaffolds                       List available scaffolds.
+/goal scaffold <id>                   Set scaffold for current/future continuations.
+/goal scaffold status                 Show current scaffold.
 
 Model tools for long-horizon goals:
 get_goal, goal_note, goal_criteria, goal_criterion_update, goal_review, goal_block, update_goal.`;
@@ -322,6 +401,35 @@ export default function goalExtension(pi: ExtensionAPI) {
 
       if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
         ctx.ui.notify(goalHelp(), "info");
+        return;
+      }
+
+      if (subcommand === "scaffolds") {
+        const scaffolds = await listScaffolds(ctx.cwd);
+        ctx.ui.notify(scaffolds.map((item) => `${item.id} (${item.source}) — ${item.description}`).join("\n"), "info");
+        return;
+      }
+
+      if (subcommand === "scaffold") {
+        const value = trimmed.slice("scaffold".length).trim();
+        const current = await reloadRuntime(ctx);
+        if (!current) {
+          ctx.ui.notify("No current goal found.", "warning");
+          return;
+        }
+        if (!value || value === "status") {
+          const scaffold = await loadScaffold(ctx.cwd, current.scaffold ?? "default");
+          ctx.ui.notify(`Current scaffold: ${scaffold.id} (${scaffold.source})\n${scaffold.description}`, "info");
+          return;
+        }
+        const scaffold = await loadScaffold(ctx.cwd, value);
+        if (scaffold.source === "bundled" && scaffold.id === "default" && value !== "default") {
+          ctx.ui.notify(`Scaffold not found: ${value}`, "warning");
+          return;
+        }
+        const goal = await mutateCurrentGoal(ctx.cwd, (current) => ({ ...current, scaffold: value, continuationQueued: false }));
+        updateStatus(ctx, goal);
+        ctx.ui.notify(`Goal scaffold set to ${scaffold.id} (${scaffold.source}).`, "info");
         return;
       }
 
