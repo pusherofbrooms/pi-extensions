@@ -6,12 +6,15 @@ import { applyCriterionUpdates, completionReadiness, normalizeCriteriaInputs, no
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const MAX_OBJECTIVE_CHARS = 4000;
 const CONTINUATION_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
+const MODULE_DIR = typeof __dirname === "string" ? __dirname : dirname(fileURLToPath(import.meta.url));
 const STORE_DIR = join(homedir(), ".pi", "agent", "goals");
 const GOALS_DIR = join(STORE_DIR, "goals");
+const BUNDLED_SCAFFOLDS_DIR = join(MODULE_DIR, "scaffolds");
 const USER_SCAFFOLDS_DIR = join(homedir(), ".pi", "agent", "scaffolds");
 const PROJECT_SCAFFOLDS_DIR = ".pi/scaffolds";
 const INDEX_PATH = join(STORE_DIR, "index.json");
@@ -96,25 +99,12 @@ type GoalScaffold = {
   path?: string;
 };
 
-const BUILTIN_SCAFFOLDS: Record<string, Omit<GoalScaffold, "source">> = {
-  default: {
-    id: "default",
-    name: "Default",
-    description: "Generic coherent progress for ordinary goals.",
-    body: `Make one coherent unit of progress per continuation. A coherent unit may be a focused change, bounded investigation, review, or small operating cycle. Update durable goal state and stop.`,
-  },
-  zenith: {
-    id: "zenith",
-    name: "Zenith-style gap closer",
-    description: "Repeated gap finding, evidence, and stopping discipline for linear long-horizon work.",
-    body: `Use a Zenith-style control loop. Each continuation: inspect current state, compare it to the original objective and success criteria, identify the most important remaining gap, close or investigate one bounded gap, record evidence, and stop. Replan when evidence changes. Do not complete without passed criteria and a ready terminal review.`,
-  },
-  operations: {
-    id: "operations",
-    name: "Operations / spinning plates",
-    description: "Portfolio-style management for live systems with several concerns that must stay healthy.",
-    body: `Use an operations portfolio loop. Maintain multiple lanes in structured goal notes when useful: facts/evidence for current state, assumptions for expected passive progress, risks for fragile lanes, blockers for stopped lanes, and nextAction for the next trigger. Each continuation: briefly inspect important lanes, repair any critical broken lane if needed, advance one primary lane with a bounded action, record lane health/evidence/next triggers, and stop. Do not let the most urgent lane permanently starve strategic lanes.`,
-  },
+const FALLBACK_DEFAULT_SCAFFOLD: GoalScaffold = {
+  id: "default",
+  name: "Default",
+  description: "Generic coherent progress for ordinary goals.",
+  body: "Make one coherent unit of progress per continuation. A coherent unit may be a focused change, bounded investigation, review, or small operating cycle. Update durable goal state and stop.",
+  source: "bundled",
 };
 
 function nowIso(): string {
@@ -152,7 +142,7 @@ function parseFrontmatter(raw: string): { data: Record<string, string>; body: st
   return { data, body: raw.slice(end + 5).trim() };
 }
 
-async function readScaffoldFile(baseDir: string, id: string, source: "user" | "project"): Promise<GoalScaffold | undefined> {
+async function readScaffoldFile(baseDir: string, id: string, source: GoalScaffold["source"]): Promise<GoalScaffold | undefined> {
   const path = join(baseDir, id, "SCAFFOLD.md");
   if (!existsSync(path)) return undefined;
   const raw = await readFile(path, "utf8");
@@ -160,26 +150,35 @@ async function readScaffoldFile(baseDir: string, id: string, source: "user" | "p
   return { id: data.name ?? id, name: data.title ?? data.name ?? id, description: data.description ?? "Custom goal scaffold.", body, source, path };
 }
 
+async function listScaffoldsFromDir(baseDir: string, source: GoalScaffold["source"]): Promise<GoalScaffold[]> {
+  if (!existsSync(baseDir)) return [];
+  const scaffolds: GoalScaffold[] = [];
+  for (const entry of await readdir(baseDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const scaffold = await readScaffoldFile(baseDir, entry.name, source);
+    if (scaffold) scaffolds.push(scaffold);
+  }
+  return scaffolds;
+}
+
 async function loadScaffold(cwd: string, id = "default"): Promise<GoalScaffold> {
   const project = await readScaffoldFile(join(cwd, PROJECT_SCAFFOLDS_DIR), id, "project");
   if (project) return project;
   const user = await readScaffoldFile(USER_SCAFFOLDS_DIR, id, "user");
   if (user) return user;
-  const builtin = BUILTIN_SCAFFOLDS[id] ?? BUILTIN_SCAFFOLDS.default;
-  return { ...builtin, source: "bundled" };
+  const bundled = await readScaffoldFile(BUNDLED_SCAFFOLDS_DIR, id, "bundled");
+  if (bundled) return bundled;
+  return id === "default" ? FALLBACK_DEFAULT_SCAFFOLD : await loadScaffold(cwd, "default");
 }
 
 async function listScaffolds(cwd: string): Promise<GoalScaffold[]> {
   const byId = new Map<string, GoalScaffold>();
-  for (const scaffold of Object.values(BUILTIN_SCAFFOLDS)) byId.set(scaffold.id, { ...scaffold, source: "bundled" });
-  for (const [base, source] of [[USER_SCAFFOLDS_DIR, "user"], [join(cwd, PROJECT_SCAFFOLDS_DIR), "project"]] as const) {
-    if (!existsSync(base)) continue;
-    for (const entry of await readdir(base, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const scaffold = await readScaffoldFile(base, entry.name, source);
-      if (scaffold) byId.set(scaffold.id, scaffold);
+  for (const [base, source] of [[BUNDLED_SCAFFOLDS_DIR, "bundled"], [USER_SCAFFOLDS_DIR, "user"], [join(cwd, PROJECT_SCAFFOLDS_DIR), "project"]] as const) {
+    for (const scaffold of await listScaffoldsFromDir(base, source)) {
+      byId.set(scaffold.id, scaffold);
     }
   }
+  if (!byId.has("default")) byId.set("default", FALLBACK_DEFAULT_SCAFFOLD);
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 

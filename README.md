@@ -129,7 +129,7 @@ For long-horizon goals, the model can define evidence-bearing success criteria, 
 
 The default continuation policy is intentionally generic: make one coherent unit of progress, update durable state, and stop. A coherent unit can be a focused change, bounded investigation, review, or an operating cycle that checks several live concerns and advances one primary concern.
 
-Goal scaffolds customize the continuation method. Built-ins are `default`, `zenith` (gap-closing/review discipline), and `operations` (portfolio management for many spinning plates). Custom scaffolds can be added at `~/.pi/agent/scaffolds/<id>/SCAFFOLD.md` or project-local `.pi/scaffolds/<id>/SCAFFOLD.md`; project scaffolds override user scaffolds, which override bundled scaffolds.
+Goal scaffolds customize the continuation method. Bundled scaffolds are installed with this package under `scaffolds/<id>/SCAFFOLD.md`; current bundled scaffolds are `default`, `zenith` (gap-closing/review discipline), and `operations` (portfolio management for many spinning plates). Custom scaffolds can be added at `~/.pi/agent/scaffolds/<id>/SCAFFOLD.md` or project-local `.pi/scaffolds/<id>/SCAFFOLD.md`; project scaffolds override user scaffolds, which override bundled scaffolds.
 
 Scaffold files are Markdown with optional simple frontmatter:
 
