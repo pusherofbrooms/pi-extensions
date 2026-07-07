@@ -38,6 +38,55 @@ export function normalizeCriteriaInputs(inputs, existing = []) {
   return result;
 }
 
+export function appendUniqueStrings(existing = [], incoming = [], maxItems = 50) {
+  const result = [];
+  const seen = new Set();
+  for (const value of [...(existing ?? []), ...(incoming ?? [])]) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result.slice(-maxItems);
+}
+
+export function mergeCriteria(existing = [], proposed = [], updates = []) {
+  let criteria = [...(existing ?? [])];
+  if (proposed?.length) {
+    const byId = new Map(criteria.map((criterion) => [criterion.id, criterion]));
+    const additions = [];
+    for (const input of proposed) {
+      const normalized = normalizeCriteriaInputs([input], [...criteria, ...additions])[0];
+      if (byId.has(normalized.id)) {
+        const current = byId.get(normalized.id);
+        const replacement = { ...current, text: normalized.text, status: input.status ?? current.status, evidence: normalized.evidence ?? current.evidence };
+        byId.set(normalized.id, replacement);
+        criteria = criteria.map((criterion) => criterion.id === normalized.id ? replacement : criterion);
+      } else {
+        additions.push(normalized);
+        byId.set(normalized.id, normalized);
+      }
+    }
+    criteria = [...criteria, ...additions];
+  }
+  return updates?.length ? applyCriterionUpdates(criteria, updates) : criteria;
+}
+
+export function blockedStatusFromReport(report, policy = {}) {
+  if (report?.outcome !== "blocked") return { blocked: false };
+  const blockers = Array.isArray(report.blockers) ? report.blockers.filter((item) => typeof item === "string" && item.trim()) : [];
+  const evidence = Array.isArray(report.evidence) ? report.evidence.filter((item) => typeof item === "string" && item.trim()) : [];
+  if (policy.blockedPolicy === "external-blocker-only" || policy.blockedPolicy === "strict") {
+    if (!blockers.length || !evidence.length) {
+      return { blocked: false, reason: "Blocked outcome downgraded: strict policy requires blocker text and evidence." };
+    }
+  }
+  return { blocked: true };
+}
+
 export function applyCriterionUpdates(criteria, updates) {
   const byId = new Map(criteria.map((criterion) => [criterion.id, criterion]));
   for (const update of updates ?? []) {

@@ -10,7 +10,7 @@ import {
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
 import { detectSecret } from "./secret-detection.mjs";
-import { applyCriterionUpdates, completionReadiness, normalizeCriteriaInputs, normalizeGoal, validateReview } from "./goal-core.mjs";
+import { appendUniqueStrings, applyCriterionUpdates, blockedStatusFromReport, completionReadiness, mergeCriteria, normalizeCriteriaInputs, normalizeGoal, validateReview } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -99,6 +99,16 @@ type GoalIndex = {
 let runtime: StoredGoal | undefined;
 let shuttingDown = false;
 
+type ScaffoldPolicy = {
+  goalShape?: string;
+  workflow?: string;
+  reviewEvery?: number;
+  completionPolicy?: string;
+  blockedPolicy?: string;
+  waitingAllowed?: boolean;
+  mergePolicy?: string;
+};
+
 type GoalScaffold = {
   id: string;
   name: string;
@@ -106,6 +116,7 @@ type GoalScaffold = {
   body: string;
   source: "bundled" | "user" | "project";
   path?: string;
+  policy: ScaffoldPolicy;
 };
 
 type DelegatedGoalReport = {
@@ -152,6 +163,7 @@ const FALLBACK_DEFAULT_SCAFFOLD: GoalScaffold = {
   description: "Generic coherent progress for ordinary goals.",
   body: "Make one coherent unit of progress per continuation. A coherent unit may be a focused change, bounded investigation, review, or small operating cycle. Update durable goal state and stop.",
   source: "bundled",
+  policy: { goalShape: "general", workflow: "worker", completionPolicy: "parent-review", blockedPolicy: "external-blocker-only", waitingAllowed: false, mergePolicy: "evidence-first" },
 };
 
 function nowIso(): string {
@@ -189,12 +201,36 @@ function parseFrontmatter(raw: string): { data: Record<string, string>; body: st
   return { data, body: raw.slice(end + 5).trim() };
 }
 
+function parseBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (["true", "yes", "1"].includes(value.toLowerCase())) return true;
+  if (["false", "no", "0"].includes(value.toLowerCase())) return false;
+  return undefined;
+}
+
+function parseScaffoldPolicy(data: Record<string, string>): ScaffoldPolicy {
+  return {
+    goalShape: data.goalShape,
+    workflow: data.workflow,
+    reviewEvery: parsePositiveInt(data.reviewEvery),
+    completionPolicy: data.completionPolicy,
+    blockedPolicy: data.blockedPolicy,
+    waitingAllowed: parseBoolean(data.waitingAllowed),
+    mergePolicy: data.mergePolicy,
+  };
+}
+
+function scaffoldPolicyText(scaffold: GoalScaffold): string {
+  const entries = Object.entries(scaffold.policy).filter(([, value]) => value !== undefined && value !== "");
+  return entries.length ? entries.map(([key, value]) => `- ${key}: ${value}`).join("\n") : "- No explicit policy.";
+}
+
 async function readScaffoldFile(baseDir: string, id: string, source: GoalScaffold["source"]): Promise<GoalScaffold | undefined> {
   const path = join(baseDir, id, "SCAFFOLD.md");
   if (!existsSync(path)) return undefined;
   const raw = await readFile(path, "utf8");
   const { data, body } = parseFrontmatter(raw);
-  return { id: data.name ?? id, name: data.title ?? data.name ?? id, description: data.description ?? "Custom goal scaffold.", body, source, path };
+  return { id: data.name ?? id, name: data.title ?? data.name ?? id, description: data.description ?? "Custom goal scaffold.", body, source, path, policy: parseScaffoldPolicy(data) };
 }
 
 async function listScaffoldsFromDir(baseDir: string, source: GoalScaffold["source"]): Promise<GoalScaffold[]> {
@@ -448,7 +484,7 @@ function checkParentReviewForSecrets(report: ParentReviewReport): string | undef
 
 function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold): string {
   const needsReview = !!goal.reviewEvery && goal.stepCount > 0 && goal.stepCount % goal.reviewEvery === 0 && goal.lastReviewStep !== goal.stepCount;
-  return `${needsReview ? "Perform a strategic review for" : "Execute the next delegated continuation for"} this autonomous goal.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state:\n${renderGoalForModel(goal)}\n\nScaffold: ${scaffold.id} (${scaffold.source})\n${scaffold.body}\n\nTurn contract:\n${needsReview ? "- This is a scheduled strategic review. Do not do broad new execution unless needed to verify state. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next focus.\n" : ""}- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteria in the criteria field before or alongside substantive progress.\n- If you think the goal is done, set outcome to ready_to_complete and include concrete evidence plus verificationNeeded for the parent.\n\nReturn only valid JSON with this shape. Allowed outcome values: progress, waiting, blocked, ready_to_complete, no_progress. Allowed criterion status values: pending, passed, failed. Allowed confidence values: low, medium, high.\n{\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "actionsTaken": ["..."],\n  "evidence": ["file paths, command results, produced content, or other concrete evidence"],\n  "checklist": [{ "text": "...", "done": true, "evidence": "..." }],\n  "facts": ["durable facts to retain"],\n  "assumptions": ["assumptions to retain"],\n  "risks": ["risks to retain"],\n  "blockers": ["blockers to retain"],\n  "nextAction": "next concrete action unless blocked or ready_to_complete",\n  "criteria": [{ "id": "optional criterion id", "text": "success criterion", "status": "pending", "evidence": "required when passed" }],\n  "criterionUpdates": [{ "id": "existing criterion id", "status": "passed", "evidence": "required when passed" }],\n  "review": { "findings": ["..."], "evidenceSummary": "...", "unresolvedGaps": ["..."] },\n  "completionAssessment": { "ready": false, "confidence": "medium", "reason": "...", "remainingGaps": ["..."], "verificationNeeded": ["..."] },\n  "waitCondition": "for waiting outcomes",\n  "resumeTrigger": "for waiting outcomes",\n  "opportunitiesExhausted": ["for operations-style cycles"]\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `${needsReview ? "Perform a strategic review for" : "Execute the next delegated continuation for"} this autonomous goal.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state:\n${renderGoalForModel(goal)}\n\nScaffold: ${scaffold.id} (${scaffold.source})\nPolicy:\n${scaffoldPolicyText(scaffold)}\n\nInstructions:\n${scaffold.body}\n\nTurn contract:\n${needsReview ? "- This is a scheduled strategic review. Do not do broad new execution unless needed to verify state. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next focus.\n" : ""}- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteria in the criteria field before or alongside substantive progress.\n- If you think the goal is done, set outcome to ready_to_complete and include concrete evidence plus verificationNeeded for the parent.\n\nReturn only valid JSON with this shape. Allowed outcome values: progress, waiting, blocked, ready_to_complete, no_progress. Allowed criterion status values: pending, passed, failed. Allowed confidence values: low, medium, high.\n{\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "actionsTaken": ["..."],\n  "evidence": ["file paths, command results, produced content, or other concrete evidence"],\n  "checklist": [{ "text": "...", "done": true, "evidence": "..." }],\n  "facts": ["durable facts to retain"],\n  "assumptions": ["assumptions to retain"],\n  "risks": ["risks to retain"],\n  "blockers": ["blockers to retain"],\n  "nextAction": "next concrete action unless blocked or ready_to_complete",\n  "criteria": [{ "id": "optional criterion id", "text": "success criterion", "status": "pending", "evidence": "required when passed" }],\n  "criterionUpdates": [{ "id": "existing criterion id", "status": "passed", "evidence": "required when passed" }],\n  "review": { "findings": ["..."], "evidenceSummary": "...", "unresolvedGaps": ["..."] },\n  "completionAssessment": { "ready": false, "confidence": "medium", "reason": "...", "remainingGaps": ["..."], "verificationNeeded": ["..."] },\n  "waitCondition": "for waiting outcomes",\n  "resumeTrigger": "for waiting outcomes",\n  "opportunitiesExhausted": ["for operations-style cycles"]\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
 async function loadAgentSystemPrompt(path: string): Promise<string> {
@@ -529,20 +565,19 @@ async function runParentReview(goal: StoredGoal, workerReport: DelegatedGoalRepo
   return report;
 }
 
-function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport): StoredGoal {
+function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport, scaffold: GoalScaffold): StoredGoal {
   const secretError = checkReportForSecrets(report);
   if (secretError) throw new Error(`Refusing to store goal worker report: ${secretError}.`);
 
-  const criteria = report.criteria?.length
-    ? normalizeCriteriaInputs(report.criteria, goal.criteria ?? []) as GoalCriterion[]
-    : report.criterionUpdates?.length
-      ? applyCriterionUpdates(goal.criteria ?? [], report.criterionUpdates) as GoalCriterion[]
-      : goal.criteria;
-  const reviewVerdict: GoalReviewVerdict = report.outcome === "blocked" ? "blocked" : report.outcome === "ready_to_complete" ? "ready_to_complete" : "not_ready";
-  const shouldRecordReview = report.outcome === "ready_to_complete" || report.outcome === "blocked" || !!report.review;
+  const blockDecision = blockedStatusFromReport(report, scaffold.policy);
+  const effectiveOutcome = report.outcome === "blocked" && !blockDecision.blocked ? "progress" : report.outcome;
+  const criteria = mergeCriteria(goal.criteria ?? [], report.criteria ?? [], report.criterionUpdates ?? []) as GoalCriterion[];
+  const reviewVerdict: GoalReviewVerdict = effectiveOutcome === "blocked" ? "blocked" : effectiveOutcome === "ready_to_complete" ? "ready_to_complete" : "not_ready";
+  const shouldRecordReview = effectiveOutcome === "ready_to_complete" || report.outcome === "blocked" || !!report.review;
   const unresolvedGaps = report.review?.unresolvedGaps
     ?? report.completionAssessment?.remainingGaps
-    ?? (report.outcome === "ready_to_complete" ? undefined : [report.nextAction ?? report.waitCondition ?? "Continue delegated goal execution."]);
+    ?? (blockDecision.reason ? [blockDecision.reason] : undefined)
+    ?? (effectiveOutcome === "ready_to_complete" ? undefined : [report.nextAction ?? report.waitCondition ?? "Continue delegated goal execution."]);
   const review: GoalReview | undefined = shouldRecordReview ? {
     timestamp: nowIso(),
     verdict: reviewVerdict,
@@ -554,7 +589,7 @@ function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport): St
   validateReview(review ?? { verdict: "not_ready", findings: ["Delegated progress recorded."], unresolvedGaps: ["Continue."], evidenceSummary: "Delegated progress recorded." });
 
   const noteParts = [
-    `Delegated outcome: ${report.outcome}. ${report.summary}`,
+    `Delegated outcome: ${report.outcome}${effectiveOutcome !== report.outcome ? ` (treated as ${effectiveOutcome})` : ""}. ${report.summary}`,
     report.actionsTaken?.length ? `Actions: ${report.actionsTaken.join("; ")}` : undefined,
     report.waitCondition ? `Wait condition: ${report.waitCondition}` : undefined,
     report.resumeTrigger ? `Resume trigger: ${report.resumeTrigger}` : undefined,
@@ -562,19 +597,19 @@ function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport): St
 
   return {
     ...goal,
-    status: report.outcome === "blocked" ? "blocked" : goal.status,
-    stopReason: report.outcome === "blocked" ? "blocked" : goal.stopReason,
+    status: effectiveOutcome === "blocked" ? "blocked" : goal.status,
+    stopReason: effectiveOutcome === "blocked" ? "blocked" : goal.stopReason,
     summary: report.summary,
     checklist: report.checklist ?? goal.checklist,
     criteria,
     reviews: review ? [...(goal.reviews ?? []), review].slice(-20) : goal.reviews,
     lastReviewStep: review ? goal.stepCount : goal.lastReviewStep,
-    facts: asStringArray(report.facts) ?? goal.facts,
-    assumptions: asStringArray(report.assumptions) ?? goal.assumptions,
-    risks: asStringArray(report.risks) ?? goal.risks,
-    blockers: report.outcome === "blocked" ? asStringArray(report.blockers) ?? [report.summary] : asStringArray(report.blockers) ?? goal.blockers,
-    evidence: asStringArray(report.evidence) ?? goal.evidence,
-    nextAction: report.outcome === "ready_to_complete"
+    facts: appendUniqueStrings(goal.facts, report.facts),
+    assumptions: appendUniqueStrings(goal.assumptions, report.assumptions),
+    risks: appendUniqueStrings(goal.risks, report.risks),
+    blockers: effectiveOutcome === "blocked" ? appendUniqueStrings(goal.blockers, asStringArray(report.blockers) ?? [report.summary]) : appendUniqueStrings(goal.blockers, report.blockers),
+    evidence: appendUniqueStrings(goal.evidence, report.evidence),
+    nextAction: effectiveOutcome === "ready_to_complete"
       ? "Parent should verify readiness and complete the goal if evidence is sufficient."
       : report.nextAction ?? report.resumeTrigger ?? report.waitCondition ?? goal.nextAction,
     notes: [...goal.notes, { timestamp: nowIso(), text: noteParts.join(" ") }].slice(-50),
@@ -586,7 +621,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   if (ctx.hasUI) ctx.ui.notify(`Running delegated goal step ${goal.stepCount + 1}...`, "info");
   const scaffold = await loadScaffold(ctx.cwd, goal.scaffold ?? "default");
   const report = await runGoalWorker(goal, scaffold, ctx);
-  const afterReport = applyDelegatedReport(goal, report);
+  const afterReport = applyDelegatedReport(goal, report, scaffold);
   const nextStep = goal.stepCount + 1;
   const readiness = report.outcome === "ready_to_complete" ? completionReadiness(afterReport) : { ready: false, missing: [] as string[] };
 
@@ -739,7 +774,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 
       if (subcommand === "scaffolds") {
         const scaffolds = await listScaffolds(ctx.cwd);
-        ctx.ui.notify(scaffolds.map((item) => `${item.id} (${item.source}) — ${item.description}`).join("\n"), "info");
+        ctx.ui.notify(scaffolds.map((item) => `${item.id} (${item.source}) — ${item.description}\n  ${scaffoldPolicyText(item).replace(/\n/g, "\n  ")}`).join("\n"), "info");
         return;
       }
 
@@ -752,7 +787,7 @@ export default function goalExtension(pi: ExtensionAPI) {
         }
         if (!value || value === "status") {
           const scaffold = await loadScaffold(ctx.cwd, current.scaffold ?? "default");
-          ctx.ui.notify(`Current scaffold: ${scaffold.id} (${scaffold.source})\n${scaffold.description}`, "info");
+          ctx.ui.notify(`Current scaffold: ${scaffold.id} (${scaffold.source})\n${scaffold.description}\n${scaffoldPolicyText(scaffold)}`, "info");
           return;
         }
         const scaffold = await loadScaffold(ctx.cwd, value);
@@ -855,6 +890,7 @@ export default function goalExtension(pi: ExtensionAPI) {
         return;
       }
 
+      const scaffold = await loadScaffold(ctx.cwd, "default");
       const goal = await writeGoal({
         version: 1,
         id: makeId(),
@@ -862,11 +898,12 @@ export default function goalExtension(pi: ExtensionAPI) {
         sessionFile: ctx.sessionManager.getSessionFile(),
         status: "active",
         objective,
-        scaffold: "default",
+        scaffold: scaffold.id,
         createdAt: nowIso(),
         updatedAt: nowIso(),
         stepCount: 0,
         maxIterations,
+        reviewEvery: scaffold.policy.reviewEvery,
         summary: "Goal created. No progress yet.",
         checklist: [],
         criteria: [],
@@ -903,6 +940,124 @@ export default function goalExtension(pi: ExtensionAPI) {
         content: [{ type: "text", text: renderGoalForModel(goal) }],
         details: { active: goal.status === "active", goal: goalForModel(goal), path: goalPath(goal.id) },
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_list_scaffolds",
+    label: "Goal List Scaffolds",
+    description: "List available /goal scaffolds with their merge/review policy. Use before choosing a scaffold for a new or current goal.",
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const scaffolds = await listScaffolds(ctx.cwd);
+      return {
+        content: [{ type: "text", text: scaffolds.map((item) => `${item.id} (${item.source}) — ${item.description}\n${scaffoldPolicyText(item)}`).join("\n\n") }],
+        details: { scaffolds },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_get_scaffold",
+    label: "Goal Get Scaffold",
+    description: "Inspect a /goal scaffold's instructions and merge/review policy.",
+    parameters: Type.Object({ id: Type.String({ description: "Scaffold id, such as default, operations, or zenith." }) }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const scaffold = await loadScaffold(ctx.cwd, params.id);
+      if (scaffold.source === "bundled" && scaffold.id === "default" && params.id !== "default") {
+        return { content: [{ type: "text", text: `Scaffold not found: ${params.id}` }], details: { found: false } };
+      }
+      return {
+        content: [{ type: "text", text: `${scaffold.id} (${scaffold.source}) — ${scaffold.description}\n${scaffoldPolicyText(scaffold)}\n\n${scaffold.body}` }],
+        details: { found: true, scaffold },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_set_scaffold",
+    label: "Goal Set Scaffold",
+    description: "Set the scaffold for the current goal. Use after inspecting/recommending a scaffold or when the user asks for a specific one.",
+    parameters: Type.Object({ id: Type.String({ description: "Scaffold id to set on the current goal." }) }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const scaffold = await loadScaffold(ctx.cwd, params.id);
+      if (scaffold.source === "bundled" && scaffold.id === "default" && params.id !== "default") {
+        return { content: [{ type: "text", text: `Scaffold not found: ${params.id}` }], details: { updated: false } };
+      }
+      const goal = await mutateCurrentGoal(ctx.cwd, (current) => ({ ...current, scaffold: params.id, reviewEvery: scaffold.policy.reviewEvery || current.reviewEvery, continuationQueued: false }));
+      updateStatus(ctx, goal);
+      if (!goal) return { content: [{ type: "text", text: "No current goal found." }], details: { updated: false } };
+      return { content: [{ type: "text", text: `Goal scaffold set to ${scaffold.id} (${scaffold.source}).` }], details: { updated: true, scaffold, goal: goalForModel(goal), path: goalPath(goal.id) } };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_recommend_scaffold",
+    label: "Goal Recommend Scaffold",
+    description: "Recommend an existing scaffold for a proposed objective. This does not start or modify a goal.",
+    parameters: Type.Object({ objective: Type.String({ description: "Goal objective to classify." }) }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const text = params.objective.toLowerCase();
+      const id = /bitburner|daemon|server|session|monitor|operate|automation|running|deploy|live/.test(text)
+        ? "operations"
+        : /long[- ]?horizon|phase|milestone|gap|finish|complete|implement|fix|build|test/.test(text)
+          ? "zenith"
+          : "default";
+      const scaffold = await loadScaffold(ctx.cwd, id);
+      const rationale = id === "operations"
+        ? "The objective appears to involve live/external operational state or ongoing automation."
+        : id === "zenith"
+          ? "The objective appears to involve linear long-horizon gap-closing with evidence and periodic review."
+          : "The objective appears bounded enough for the general coherent-progress scaffold.";
+      return { content: [{ type: "text", text: `Recommended scaffold: ${scaffold.id}\n${rationale}\n\n${scaffoldPolicyText(scaffold)}` }], details: { scaffold, rationale } };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_start",
+    label: "Goal Start",
+    description: "Start a new autonomous goal after explicit user approval. Do not use proactively; first recommend the objective/scaffold and ask the user to approve.",
+    parameters: Type.Object({
+      objective: Type.String({ description: "Approved goal objective." }),
+      scaffold: Type.Optional(Type.String({ description: "Optional scaffold id. Defaults to recommended/default." })),
+      maxIterations: Type.Optional(Type.Number({ description: "Optional positive iteration cap." })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!params.objective.trim()) throw new Error("Goal objective is required.");
+      if (params.objective.length > MAX_OBJECTIVE_CHARS) throw new Error(`Goal objective is too long (${params.objective.length}/${MAX_OBJECTIVE_CHARS} chars).`);
+      const secretError = checkNoSecrets(params.objective, "Goal objective");
+      if (secretError) throw new Error(`Refusing to store goal objective: ${secretError}.`);
+      const scaffold = await loadScaffold(ctx.cwd, params.scaffold ?? "default");
+      const maxIterations = typeof params.maxIterations === "number" && params.maxIterations > 0 ? Math.floor(params.maxIterations) : undefined;
+      const goal = await writeGoal({
+        version: 1,
+        id: makeId(),
+        cwd: ctx.cwd,
+        sessionFile: ctx.sessionManager.getSessionFile(),
+        status: "active",
+        objective: params.objective.trim(),
+        scaffold: scaffold.id,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        stepCount: 0,
+        maxIterations,
+        reviewEvery: scaffold.policy.reviewEvery,
+        summary: "Goal created. No progress yet.",
+        checklist: [],
+        criteria: [],
+        reviews: [],
+        facts: [],
+        assumptions: [],
+        risks: [],
+        blockers: [],
+        evidence: [],
+        nextAction: "Inspect the goal and choose the first concrete action.",
+        notes: [{ timestamp: nowIso(), text: "Goal created via goal_start tool. Do not store secrets in goal notes." }],
+        continuationQueued: false,
+      });
+      updateStatus(ctx, goal);
+      queueContinuation(pi, ctx, goal);
+      return { content: [{ type: "text", text: `Goal started with scaffold ${scaffold.id}. State: ${goalPath(goal.id)}` }], details: { updated: true, scaffold, goal: goalForModel(goal), path: goalPath(goal.id) } };
     },
   });
 

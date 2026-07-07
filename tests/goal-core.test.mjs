@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  appendUniqueStrings,
   applyCriterionUpdates,
+  blockedStatusFromReport,
   completionReadiness,
+  mergeCriteria,
   normalizeCriteriaInputs,
   normalizeGoal,
   validateReview,
@@ -35,6 +38,31 @@ test("applyCriterionUpdates rejects unknown ids and requires evidence for passed
   assert.throws(() => applyCriterionUpdates(criteria, [{ id: "NOPE", status: "failed" }]), /Unknown/);
   assert.throws(() => applyCriterionUpdates(criteria, [{ id: "CRIT-001", status: "passed" }]), /requires evidence/);
   assert.equal(applyCriterionUpdates(criteria, [{ id: "CRIT-001", status: "passed", evidence: "test output" }])[0].status, "passed");
+});
+
+test("appendUniqueStrings appends and deduplicates durable state", () => {
+  assert.deepEqual(appendUniqueStrings(["A", "b"], [" a ", "C", ""]), ["A", "b", "C"]);
+});
+
+test("mergeCriteria preserves existing criteria while adding proposed criteria and updates", () => {
+  const existing = [{ id: "CRIT-001", text: "Existing", status: "pending" }];
+  const merged = mergeCriteria(existing, [{ text: "New" }], [{ id: "CRIT-001", status: "failed", evidence: "observed failing" }]);
+  assert.deepEqual(merged, [
+    { id: "CRIT-001", text: "Existing", status: "failed", evidence: "observed failing" },
+    { id: "CRIT-002", text: "New", status: "pending", evidence: undefined },
+  ]);
+});
+
+test("mergeCriteria does not downgrade existing criteria when re-proposed without status", () => {
+  const existing = [{ id: "CRIT-001", text: "Existing", status: "passed", evidence: "proof" }];
+  assert.deepEqual(mergeCriteria(existing, [{ id: "CRIT-001", text: "Existing renamed" }]), [
+    { id: "CRIT-001", text: "Existing renamed", status: "passed", evidence: "proof" },
+  ]);
+});
+
+test("blockedStatusFromReport downgrades unevidenced strict blocker", () => {
+  assert.equal(blockedStatusFromReport({ outcome: "blocked", summary: "stuck" }, { blockedPolicy: "external-blocker-only" }).blocked, false);
+  assert.equal(blockedStatusFromReport({ outcome: "blocked", blockers: ["Need user login"], evidence: ["Login prompt observed"] }, { blockedPolicy: "external-blocker-only" }).blocked, true);
 });
 
 test("validateReview requires findings, evidence, and gaps for non-ready verdicts", () => {

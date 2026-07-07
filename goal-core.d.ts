@@ -1,6 +1,9 @@
 export function normalizeGoal<T extends Record<string, unknown>>(goal: T): T;
 export function nextCriterionId(existing?: Array<{ id: string }>): string;
 export function normalizeCriteriaInputs(inputs: unknown[], existing?: Array<{ id: string }>): unknown[];
+export function appendUniqueStrings(existing?: unknown[], incoming?: unknown[], maxItems?: number): string[];
+export function mergeCriteria(existing?: unknown[], proposed?: unknown[], updates?: unknown[]): unknown[];
+export function blockedStatusFromReport(report: unknown, policy?: Record<string, unknown>): { blocked: boolean; reason?: string };
 export function applyCriterionUpdates(criteria: unknown[], updates: unknown[]): unknown[];
 export function validateReview(review: unknown): void;
 export function completionReadiness(goal: unknown): { ready: boolean; missing: string[] };
