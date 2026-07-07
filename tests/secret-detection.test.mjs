@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { detectDangerousCommand, detectSecret } from "../guardrails-core.mjs";
+import { detectSecret } from "../secret-detection.mjs";
 
 test("detectSecret finds private key material", () => {
 	const begin = "-----BEGIN " + "OPENSSH PRIVATE KEY-----";
@@ -19,16 +19,4 @@ test("detectSecret finds API key assignment", () => {
 test("detectSecret ignores normal content", () => {
 	const content = "export const answer = 42;";
 	assert.equal(detectSecret(content), undefined);
-});
-
-test("detectDangerousCommand flags rm -rf", () => {
-	assert.equal(detectDangerousCommand("rm -rf /tmp/safe-test"), "rm -rf");
-});
-
-test("detectDangerousCommand flags destructive git clean", () => {
-	assert.equal(detectDangerousCommand("git clean -fd"), "Destructive git clean");
-});
-
-test("detectDangerousCommand ignores common safe command", () => {
-	assert.equal(detectDangerousCommand("ls -la"), undefined);
 });

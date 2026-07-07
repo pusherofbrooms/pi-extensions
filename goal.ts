@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
-import { detectSecret } from "./guardrails-core.mjs";
+import { detectSecret } from "./secret-detection.mjs";
 import { applyCriterionUpdates, completionReadiness, normalizeCriteriaInputs, normalizeGoal, validateReview } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";

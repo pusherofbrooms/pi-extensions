@@ -1,5 +1,5 @@
 /**
- * Shared detection logic for guardrails extension.
+ * Lightweight secret detection for durable goal state.
  * Kept in plain JS so we can test with Node's built-in test runner without extra tooling.
  */
 
@@ -14,17 +14,6 @@ export const SECRET_PATTERNS = [
 	{ name: "JWT token", regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}\b/ },
 ];
 
-/** @type {NamedPattern[]} */
-export const DANGEROUS_BASH_PATTERNS = [
-	{ name: "rm -rf", regex: /\brm\b[^\n]*\s-(?:[^\s]*r[^\s]*f|[^\s]*f[^\s]*r)/i },
-	{ name: "Disk formatting (mkfs)", regex: /\bmkfs(?:\.[a-z0-9_+-]+)?\b/i },
-	{ name: "Raw disk overwrite (dd ... of=/dev/*)", regex: /\bdd\b[^\n]*\bof=\/dev\/(?:sd[a-z]\d*|nvme\d+n\d+(?:p\d+)?|disk\d+s\d+|rdisk\d+s\d+)\b/i },
-	{ name: "Destructive git clean", regex: /\bgit\s+clean\s+-[^\n]*f[^\n]*d/i },
-	{ name: "Hard reset", regex: /\bgit\s+reset\s+--hard\b/i },
-	{ name: "Shutdown/reboot", regex: /\b(?:shutdown|reboot|halt|poweroff)\b/i },
-	{ name: "Fork bomb", regex: /:\(\)\s*\{\s*:\|:\s*&\s*\};\s*:/ },
-];
-
 /**
  * @param {string} text
  * @param {NamedPattern[]} patterns
@@ -35,25 +24,9 @@ export function firstMatch(text, patterns) {
 }
 
 /**
- * @param {unknown} value
- * @returns {string}
- */
-export function getString(value) {
-	return typeof value === "string" ? value : "";
-}
-
-/**
  * @param {string} content
  * @returns {string | undefined}
  */
 export function detectSecret(content) {
 	return firstMatch(content, SECRET_PATTERNS)?.name;
-}
-
-/**
- * @param {string} command
- * @returns {string | undefined}
- */
-export function detectDangerousCommand(command) {
-	return firstMatch(command, DANGEROUS_BASH_PATTERNS)?.name;
 }

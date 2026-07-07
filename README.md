@@ -4,10 +4,9 @@ This repo contains lightweight global extensions for Pi:
 
 1. **`show-system-prompt.ts`**
 2. **`web-tools.ts`**
-3. **`guardrails.ts`**
-4. **`subagents.ts`**
-5. **`openai-codex-image-gen.ts`**
-6. **`goal.ts`**
+3. **`subagents.ts`**
+4. **`openai-codex-image-gen.ts`**
+5. **`goal.ts`**
 
 ## Installation
 
@@ -69,21 +68,7 @@ Optional:
 
 Output is truncated to Pi defaults (about 50KB / 2000 lines), with full text saved to a temp file when truncation occurs.
 
-## 3) `guardrails`
-Adds lightweight runtime safety checks without changing day-to-day workflow.
-
-### Behavior
-- Intercepts **`write`** and **`edit`** tool calls.
-- Blocks writes when content looks like a likely secret (e.g., private key blocks, AWS keys, PAT-style tokens, JWTs, obvious `api_key`/`token` assignments).
-- Intercepts **`bash`** tool calls.
-- Prompts only for clearly dangerous commands (e.g., `rm -rf`, `mkfs`, destructive `dd`, `git reset --hard`, destructive `git clean`, reboot/shutdown patterns).
-
-### UX model
-- Safe/normal commands: no prompt.
-- Dangerous bash command in interactive mode: **one-time allow** prompt.
-- Dangerous bash command in non-interactive mode: blocked by default.
-
-## 4) `subagents`
+## 3) `subagents`
 Adds a subagent tool and command helpers:
 
 - **`subagent`**: runs named agents in isolated in-memory sessions (single, parallel, chain).
@@ -114,14 +99,14 @@ You are a focused coding worker...
 
 If `model` is omitted, subagents use the current session model.
 
-## 5) `openai-codex-image-gen`
+## 4) `openai-codex-image-gen`
 Adds **`generate_openai_image`**, an image-generation tool that uses Pi's existing `openai-codex` OAuth credentials.
 
 - Authenticate with `/login` for the OpenAI Codex provider first.
 - Default save mode is `none`; use `save=project`, `save=global`, or `save=custom` to write PNG files.
 - Optional environment/config knobs: `PI_OPENAI_IMAGE_SAVE_MODE`, `PI_OPENAI_IMAGE_SAVE_DIR`, `PI_OPENAI_IMAGE_MODEL`.
 
-## 6) `goal`
+## 5) `goal`
 Adds a tool-backed autonomous `/goal` workflow.
 
 Commands:
@@ -168,7 +153,7 @@ Only flat `key: value` frontmatter is parsed. The Markdown body is injected into
 
 ## Testing
 
-This repo includes lightweight unit tests for guardrail detection logic.
+This repo includes lightweight unit tests for pure extension support logic.
 
 Run with Nix:
 
@@ -177,7 +162,7 @@ nix develop --command node --test tests/*.test.mjs
 ```
 
 Current tests:
-- `tests/guardrails-core.test.mjs` (secret/dangerous-command detection)
+- `tests/secret-detection.test.mjs` (goal-state secret detection)
 - `tests/goal-core.test.mjs` (goal criteria/review readiness helpers)
 
 Recommended test strategy for extensions:
