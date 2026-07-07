@@ -24,6 +24,7 @@ const STORE_DIR = join(homedir(), ".pi", "agent", "goals");
 const GOALS_DIR = join(STORE_DIR, "goals");
 const BUNDLED_SCAFFOLDS_DIR = join(MODULE_DIR, "scaffolds");
 const GOAL_WORKER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-worker.md");
+const GOAL_PARENT_REVIEWER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-parent-reviewer.md");
 const USER_SCAFFOLDS_DIR = join(homedir(), ".pi", "agent", "scaffolds");
 const PROJECT_SCAFFOLDS_DIR = ".pi/scaffolds";
 const INDEX_PATH = join(STORE_DIR, "index.json");
@@ -135,6 +136,14 @@ type DelegatedGoalReport = {
   waitCondition?: string;
   resumeTrigger?: string;
   opportunitiesExhausted?: string[];
+};
+
+type ParentReviewReport = {
+  verdict: "ready_to_complete" | "not_ready";
+  commentary: string;
+  findings: string[];
+  unresolvedGaps?: string[];
+  evidenceSummary: string;
 };
 
 const FALLBACK_DEFAULT_SCAFFOLD: GoalScaffold = {
@@ -387,6 +396,20 @@ function parseDelegatedReport(text: string): DelegatedGoalReport {
   return report;
 }
 
+function parseParentReviewReport(text: string): ParentReviewReport {
+  const report = JSON.parse(extractJsonObject(text)) as ParentReviewReport;
+  if (!report || typeof report !== "object") throw new Error("Parent review report must be an object.");
+  if (!["ready_to_complete", "not_ready"].includes(report.verdict)) throw new Error(`Invalid parent review verdict: ${(report as { verdict?: unknown }).verdict}`);
+  if (!report.commentary?.trim()) throw new Error("Parent review report requires commentary.");
+  validateReview({
+    verdict: report.verdict,
+    findings: report.findings,
+    unresolvedGaps: report.verdict === "not_ready" ? report.unresolvedGaps : undefined,
+    evidenceSummary: report.evidenceSummary,
+  });
+  return report;
+}
+
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
@@ -418,19 +441,30 @@ function checkReportForSecrets(report: DelegatedGoalReport): string | undefined 
   return texts.map((text) => checkNoSecrets(text, "goal worker report")).find(Boolean);
 }
 
+function checkParentReviewForSecrets(report: ParentReviewReport): string | undefined {
+  const texts = [report.commentary, report.evidenceSummary, ...report.findings, ...(report.unresolvedGaps ?? [])];
+  return texts.map((text) => checkNoSecrets(text, "parent review report")).find(Boolean);
+}
+
 function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold): string {
   const needsReview = !!goal.reviewEvery && goal.stepCount > 0 && goal.stepCount % goal.reviewEvery === 0 && goal.lastReviewStep !== goal.stepCount;
   return `${needsReview ? "Perform a strategic review for" : "Execute the next delegated continuation for"} this autonomous goal.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state:\n${renderGoalForModel(goal)}\n\nScaffold: ${scaffold.id} (${scaffold.source})\n${scaffold.body}\n\nTurn contract:\n${needsReview ? "- This is a scheduled strategic review. Do not do broad new execution unless needed to verify state. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next focus.\n" : ""}- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteria in the criteria field before or alongside substantive progress.\n- If you think the goal is done, set outcome to ready_to_complete and include concrete evidence plus verificationNeeded for the parent.\n\nReturn only valid JSON with this shape. Allowed outcome values: progress, waiting, blocked, ready_to_complete, no_progress. Allowed criterion status values: pending, passed, failed. Allowed confidence values: low, medium, high.\n{\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "actionsTaken": ["..."],\n  "evidence": ["file paths, command results, produced content, or other concrete evidence"],\n  "checklist": [{ "text": "...", "done": true, "evidence": "..." }],\n  "facts": ["durable facts to retain"],\n  "assumptions": ["assumptions to retain"],\n  "risks": ["risks to retain"],\n  "blockers": ["blockers to retain"],\n  "nextAction": "next concrete action unless blocked or ready_to_complete",\n  "criteria": [{ "id": "optional criterion id", "text": "success criterion", "status": "pending", "evidence": "required when passed" }],\n  "criterionUpdates": [{ "id": "existing criterion id", "status": "passed", "evidence": "required when passed" }],\n  "review": { "findings": ["..."], "evidenceSummary": "...", "unresolvedGaps": ["..."] },\n  "completionAssessment": { "ready": false, "confidence": "medium", "reason": "...", "remainingGaps": ["..."], "verificationNeeded": ["..."] },\n  "waitCondition": "for waiting outcomes",\n  "resumeTrigger": "for waiting outcomes",\n  "opportunitiesExhausted": ["for operations-style cycles"]\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
-async function loadGoalWorkerSystemPrompt(): Promise<string> {
-  const raw = await readFile(GOAL_WORKER_AGENT_PATH, "utf8");
+async function loadAgentSystemPrompt(path: string): Promise<string> {
+  const raw = await readFile(path, "utf8");
   return parseFrontmatter(raw).body;
 }
 
-async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext): Promise<DelegatedGoalReport> {
+async function runIsolatedAgent(
+  goal: StoredGoal,
+  ctx: ExtensionContext,
+  systemPromptPath: string,
+  prompt: string,
+  tools: string[],
+): Promise<string> {
   const agentDir = getAgentDir();
-  const systemPrompt = await loadGoalWorkerSystemPrompt();
+  const systemPrompt = await loadAgentSystemPrompt(systemPromptPath);
   const loader = new DefaultResourceLoader({
     cwd: goal.cwd,
     agentDir,
@@ -450,7 +484,7 @@ async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: Exte
     resourceLoader: loader,
     sessionManager: SessionManager.inMemory(goal.cwd),
     model: ctx.model,
-    tools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+    tools,
   });
 
   const unsubscribe = session.subscribe((event) => {
@@ -458,13 +492,41 @@ async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: Exte
   });
 
   try {
-    await session.prompt(delegatedPrompt(goal, scaffold), { source: "extension" });
-    const text = getFinalAssistantText(messages);
-    return parseDelegatedReport(text);
+    await session.prompt(prompt, { source: "extension" });
+    return getFinalAssistantText(messages);
   } finally {
     unsubscribe();
     session.dispose();
   }
+}
+
+async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext): Promise<DelegatedGoalReport> {
+  const text = await runIsolatedAgent(
+    goal,
+    ctx,
+    GOAL_WORKER_AGENT_PATH,
+    delegatedPrompt(goal, scaffold),
+    ["read", "grep", "find", "ls", "bash", "edit", "write"],
+  );
+  return parseDelegatedReport(text);
+}
+
+function parentReviewPrompt(goal: StoredGoal, workerReport: DelegatedGoalReport): string {
+  return `A delegated goal worker believes this autonomous goal is ready to complete. Perform a concise parent-side verification pass.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state after worker report:\n${renderGoalForModel(goal)}\n\nWorker report:\n${JSON.stringify(workerReport, null, 2)}\n\nVerification contract:\n- Compare the objective, criteria, evidence, checklist, and worker report.\n- Inspect files or run lightweight commands only if needed to verify concrete claims.\n- Do not modify files.\n- Return not_ready if required evidence is missing, criteria are not actually satisfied, or verification is uncertain.\n- Return ready_to_complete only if the goal is genuinely done.\n- Include brief parent-agent commentary suitable to show the user when the goal completes or needs more work.\n\nReturn only valid JSON with this shape. Allowed verdict values: ready_to_complete, not_ready.\n{\n  "verdict": "ready_to_complete",\n  "commentary": "brief user-facing parent commentary",\n  "findings": ["..."],\n  "unresolvedGaps": ["required when not_ready"],\n  "evidenceSummary": "concrete verification evidence"\n}\n\nOmit unresolvedGaps when ready_to_complete. Do not include Markdown. Do not include commentary outside the JSON object.`;
+}
+
+async function runParentReview(goal: StoredGoal, workerReport: DelegatedGoalReport, ctx: ExtensionContext): Promise<ParentReviewReport> {
+  const text = await runIsolatedAgent(
+    goal,
+    ctx,
+    GOAL_PARENT_REVIEWER_AGENT_PATH,
+    parentReviewPrompt(goal, workerReport),
+    ["read", "grep", "find", "ls", "bash"],
+  );
+  const report = parseParentReviewReport(text);
+  const secretError = checkParentReviewForSecrets(report);
+  if (secretError) throw new Error(`Refusing to store parent review report: ${secretError}.`);
+  return report;
 }
 
 function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport): StoredGoal {
@@ -527,19 +589,45 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   const afterReport = applyDelegatedReport(goal, report);
   const nextStep = goal.stepCount + 1;
   const readiness = report.outcome === "ready_to_complete" ? completionReadiness(afterReport) : { ready: false, missing: [] as string[] };
-  const reviewedReport = report.outcome === "ready_to_complete" && !readiness.ready ? {
-    ...afterReport,
-    reviews: [...(afterReport.reviews ?? []), {
+
+  let parentReview: ParentReviewReport | undefined;
+  let reviewedReport = afterReport;
+  let completed = false;
+
+  if (report.outcome === "ready_to_complete" && readiness.ready) {
+    if (ctx.hasUI) ctx.ui.notify("Delegated worker proposed completion; running parent verification...", "info");
+    parentReview = await runParentReview(afterReport, report, ctx);
+    const parentReviewEntry: GoalReview = {
       timestamp: nowIso(),
-      verdict: "not_ready" as const,
-      findings: ["Parent readiness check rejected delegated completion."],
-      unresolvedGaps: readiness.missing,
-      evidenceSummary: `Delegated worker proposed completion, but readiness gaps remain: ${readiness.missing.join("; ")}`,
-    }].slice(-20),
-    nextAction: `Address parent readiness gaps: ${readiness.missing.join("; ")}`,
-  } : afterReport;
+      verdict: parentReview.verdict,
+      findings: parentReview.findings,
+      unresolvedGaps: parentReview.verdict === "not_ready" ? parentReview.unresolvedGaps : undefined,
+      evidenceSummary: parentReview.evidenceSummary,
+    };
+    completed = parentReview.verdict === "ready_to_complete";
+    reviewedReport = {
+      ...afterReport,
+      reviews: [...(afterReport.reviews ?? []), parentReviewEntry].slice(-20),
+      lastReviewStep: afterReport.stepCount,
+      nextAction: completed
+        ? "Goal verified complete by parent review."
+        : parentReview.unresolvedGaps?.[0] ?? "Address parent verification gaps.",
+    };
+  } else if (report.outcome === "ready_to_complete") {
+    reviewedReport = {
+      ...afterReport,
+      reviews: [...(afterReport.reviews ?? []), {
+        timestamp: nowIso(),
+        verdict: "not_ready" as const,
+        findings: ["Programmatic readiness check rejected delegated completion before parent verification."],
+        unresolvedGaps: readiness.missing,
+        evidenceSummary: `Delegated worker proposed completion, but readiness gaps remain: ${readiness.missing.join("; ")}`,
+      }].slice(-20),
+      nextAction: `Address readiness gaps before parent verification: ${readiness.missing.join("; ")}`,
+    };
+  }
+
   const reachedCap = reviewedReport.maxIterations !== undefined && nextStep >= reviewedReport.maxIterations;
-  const completed = report.outcome === "ready_to_complete" && readiness.ready;
   const updated = await writeGoal({
     ...reviewedReport,
     status: completed ? "complete" : reachedCap && reviewedReport.status === "active" ? "paused" : reviewedReport.status,
@@ -550,11 +638,13 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   updateStatus(ctx, updated);
 
   const message = completed
-    ? `Goal completed by delegated worker after parent readiness check.\n\n${report.summary}`
+    ? `Goal completed after parent verification.\n\n${parentReview?.commentary ?? report.summary}`
     : report.outcome === "ready_to_complete"
-      ? `Delegated worker thinks goal may be complete, but parent readiness check found gaps:\n${readiness.missing.map((item) => `- ${item}`).join("\n")}`
+      ? parentReview
+        ? `Delegated worker proposed completion, but parent verification says not ready.\n\n${parentReview.commentary}\n\nGaps:\n${(parentReview.unresolvedGaps ?? []).map((item) => `- ${item}`).join("\n")}`
+        : `Delegated worker thinks goal may be complete, but readiness check found gaps:\n${readiness.missing.map((item) => `- ${item}`).join("\n")}`
       : `Delegated goal step ${nextStep}: ${report.outcome}\n${report.summary}`;
-  pi.sendMessage({ customType: "goal-delegated-step", content: message, display: true, details: { report, goal: goalForModel(updated), path: goalPath(updated.id) } });
+  pi.sendMessage({ customType: "goal-delegated-step", content: message, display: true, details: { report, parentReview, goal: goalForModel(updated), path: goalPath(updated.id) } });
 
   if (completed) return;
   if (reachedCap && updated.status === "paused") {
