@@ -165,6 +165,7 @@ export function buildGoalContextPacket(goal, scaffold, request = {}) {
       workflow: request.workflow,
       workflowRoles: request.workflowRoles,
       operatingCycle: request.operatingCycle === true,
+      priorRoleReports: Array.isArray(request.priorRoleReports) ? request.priorRoleReports : [],
     },
     reportContractHint: request.reportContractHint ?? {
       schemaVersion: 1,
@@ -290,6 +291,10 @@ export function validateGoalAgentReport(report) {
   if (report.outcome === "waiting") {
     if (!isNonEmptyString(report.wait?.condition)) throw new Error("Waiting reports require wait.condition.");
     if (!isNonEmptyString(report.wait?.resumeTrigger)) throw new Error("Waiting reports require wait.resumeTrigger.");
+  }
+  if (report.role === "observer") {
+    if (!["progress", "no_progress", "waiting", "blocked"].includes(report.outcome)) throw new Error("Observer report outcome must be progress, no_progress, waiting, or blocked.");
+    if (report.outcome === "progress" && report.evidence.length === 0 && !report.actions.some((item) => item.evidence?.length)) throw new Error("Observer progress reports require inspection evidence.");
   }
   if (report.role === "reviewer") {
     if (!["ready_to_complete", "not_ready", "blocked"].includes(report.verdict)) throw new Error("Reviewer report verdict is invalid.");

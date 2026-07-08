@@ -158,6 +158,30 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
   assert.equal(packet.reportContractHint.lifecycleAuthority, "orchestrator");
 });
 
+test("buildGoalContextPacket carries prior observer reports for worker handoff", () => {
+  const observerReport = {
+    schemaVersion: 1,
+    role: "observer",
+    outcome: "progress",
+    summary: "Repo has uncommitted tracked changes.",
+    confidence: "medium",
+    actions: [{ summary: "Checked git status." }],
+    evidence: [{ kind: "command", ref: "git status --short", status: "passed", summary: "Tracked changes observed." }],
+    nextAction: "Worker should inspect the tracked changes before editing.",
+  };
+  const packet = buildGoalContextPacket(baseGoal(), { id: "default", policy: { workflow: "observer-worker" } }, {
+    role: "worker",
+    action: "continue_after_observation",
+    workflow: "observer-worker",
+    workflowRoles: ["observer", "worker"],
+    priorRoleReports: [observerReport],
+  });
+
+  assert.equal(packet.request.role, "worker");
+  assert.equal(packet.request.priorRoleReports[0].role, "observer");
+  assert.match(packet.request.priorRoleReports[0].summary, /uncommitted tracked changes/);
+});
+
 test("selectGoalWorkflowPlan supports scaffold workflow metadata safely", () => {
   assert.deepEqual(selectGoalWorkflowPlan({ policy: { workflow: "worker" } }).roles, ["worker"]);
   assert.deepEqual(selectGoalWorkflowPlan({ policy: { workflow: "worker-reviewer" } }).roles, ["worker", "reviewer"]);
@@ -318,6 +342,50 @@ test("applyGoalAgentReport follows waiting and blocked policies", () => {
   }), { policy: { blockedPolicy: "never" } });
   assert.equal(blockedDowngraded.status, "active");
   assert.match(blockedDowngraded.notes.at(-1).text, /treated as progress/);
+});
+
+test("validateGoalAgentReport accepts structured observer reports", () => {
+  assert.doesNotThrow(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "observer",
+    outcome: "progress",
+    summary: "Current repo state inspected; tests are stale.",
+    confidence: "medium",
+    actions: [{
+      summary: "Inspected git status and test metadata.",
+      evidence: [{ kind: "command", ref: "git status --short", status: "passed", summary: "Repo state observed." }],
+    }],
+    evidence: [{ kind: "observation", ref: "repo", status: "observed", summary: "Worker should account for local state." }],
+    proposedState: {
+      factsToAdd: ["Repo state was inspected before worker execution."],
+      risksToAdd: ["Local state may be stale if worker delays after observation."],
+      blockersToAdd: ["No terminal blocker; worker should verify before mutating."],
+    },
+    nextAction: "Worker should proceed with current-state evidence in mind.",
+  }));
+});
+
+test("validateGoalAgentReport rejects observer completion claims and evidence-free progress", () => {
+  assert.throws(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "observer",
+    outcome: "ready_for_review",
+    summary: "Looks complete.",
+    confidence: "medium",
+    actions: [],
+    evidence: [{ kind: "observation", ref: "goal", summary: "Observed." }],
+  }), /Observer report outcome/);
+
+  assert.throws(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "observer",
+    outcome: "progress",
+    summary: "Inspected something.",
+    confidence: "medium",
+    actions: [{ summary: "Inspected." }],
+    evidence: [],
+    nextAction: "Continue.",
+  }), /inspection evidence/);
 });
 
 test("validateGoalAgentReport accepts structured worker reports", () => {
