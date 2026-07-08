@@ -6,7 +6,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
 import { runAgentSession } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
-import { appendUniqueStrings, applyCriterionUpdates, buildGoalContextPacket, completionReadiness, formatEvidenceRefs, mergeCriteria, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, validateGoalAgentReport, validateReview } from "./goal-core.mjs";
+import { applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, formatEvidenceRefs, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -556,68 +556,10 @@ async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, 
   return { report, sessionFile: result.sessionFile };
 }
 
-function criteriaInputsFromReport(report: GoalAgentReport): { proposed: { id?: string; text: string; status?: GoalCriterionStatus; evidence?: string }[]; updates: { id: string; status: GoalCriterionStatus; evidence?: string }[] } {
-  const proposed: { id?: string; text: string; status?: GoalCriterionStatus; evidence?: string }[] = [];
-  const updates: { id: string; status: GoalCriterionStatus; evidence?: string }[] = [];
-  for (const item of report.criteriaUpdates ?? []) {
-    const evidence = evidenceText(item.evidence).join("; ") || undefined;
-    if (item.operation === "add") {
-      proposed.push({ id: item.id, text: item.text ?? "", status: item.status, evidence });
-    } else if (item.id && item.status) {
-      updates.push({ id: item.id, status: item.status, evidence });
-    }
-  }
-  return { proposed, updates };
-}
-
 function applyDelegatedReport(goal: StoredGoal, report: GoalAgentReport, scaffold: GoalScaffold): StoredGoal {
   const secretError = checkReportForSecrets(report);
   if (secretError) throw new Error(`Refusing to store goal worker report: ${secretError}.`);
-
-  const waitingAllowed = scaffold.policy.waitingAllowed === true;
-  const effectiveOutcome: GoalAgentOutcome = report.outcome === "waiting" && !waitingAllowed ? "progress" : report.outcome;
-  const { proposed, updates } = criteriaInputsFromReport(report);
-  const criteria = mergeCriteria(goal.criteria ?? [], proposed, updates) as GoalCriterion[];
-  const reviewVerdict: GoalReviewVerdict = effectiveOutcome === "blocked" ? "blocked" : effectiveOutcome === "ready_for_review" ? "ready_to_complete" : "not_ready";
-  const shouldRecordReview = effectiveOutcome === "ready_for_review" || effectiveOutcome === "blocked";
-  const evidenceSummary = evidenceText([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])]).join("; ") || report.summary;
-  const review: GoalReview | undefined = shouldRecordReview ? {
-    timestamp: nowIso(),
-    verdict: reviewVerdict,
-    findings: [report.summary],
-    unresolvedGaps: reviewVerdict === "ready_to_complete" ? undefined : [report.blocker?.reason ?? report.nextAction ?? "Continue delegated goal execution."],
-    evidenceSummary,
-  } : undefined;
-
-  validateReview(review ?? { verdict: "not_ready", findings: ["Delegated progress recorded."], unresolvedGaps: ["Continue."], evidenceSummary: "Delegated progress recorded." });
-
-  const noteParts = [
-    `Delegated outcome: ${report.outcome}${effectiveOutcome !== report.outcome ? ` (treated as ${effectiveOutcome})` : ""}. ${report.summary}`,
-    report.actions?.length ? `Actions: ${report.actions.map((item) => item.summary).join("; ")}` : undefined,
-    report.wait?.condition ? `Wait condition: ${report.wait.condition}` : undefined,
-    report.wait?.resumeTrigger ? `Resume trigger: ${report.wait.resumeTrigger}` : undefined,
-  ].filter(Boolean);
-
-  return {
-    ...goal,
-    status: effectiveOutcome === "blocked" ? "blocked" : goal.status,
-    stopReason: effectiveOutcome === "blocked" ? "blocked" : goal.stopReason,
-    summary: report.summary,
-    checklist: report.proposedState?.checklist ?? goal.checklist,
-    criteria,
-    reviews: review ? [...(goal.reviews ?? []), review].slice(-20) : goal.reviews,
-    lastReviewStep: review ? goal.stepCount : goal.lastReviewStep,
-    facts: appendUniqueStrings(goal.facts, report.proposedState?.factsToAdd),
-    assumptions: appendUniqueStrings(goal.assumptions, report.proposedState?.assumptionsToAdd),
-    risks: appendUniqueStrings(goal.risks, report.proposedState?.risksToAdd),
-    blockers: effectiveOutcome === "blocked" ? appendUniqueStrings(goal.blockers, [report.blocker?.reason ?? report.summary]) : appendUniqueStrings(goal.blockers, report.proposedState?.blockersToAdd),
-    evidence: appendUniqueStrings(goal.evidence, evidenceText([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])])),
-    nextAction: effectiveOutcome === "ready_for_review"
-      ? "Parent should verify readiness and complete the goal if evidence is sufficient."
-      : report.nextAction ?? report.wait?.resumeTrigger ?? report.wait?.condition ?? report.blocker?.needed ?? goal.nextAction,
-    notes: [...goal.notes, { timestamp: nowIso(), text: noteParts.join(" ") }].slice(-50),
-    continuationQueued: false,
-  };
+  return applyGoalAgentReport(goal, report, scaffold) as StoredGoal;
 }
 
 async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal): Promise<void> {
@@ -639,22 +581,8 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     const parentReviewRun = await runParentReview(afterReport, report, scaffold, ctx);
     parentReview = parentReviewRun.report;
     parentReviewSessionFile = parentReviewRun.sessionFile;
-    const parentReviewEntry: GoalReview = {
-      timestamp: nowIso(),
-      verdict: parentReview.verdict,
-      findings: parentReview.findings ?? [parentReview.summary],
-      unresolvedGaps: parentReview.verdict === "ready_to_complete" ? undefined : parentReview.unresolvedGaps ?? [parentReview.summary],
-      evidenceSummary: evidenceText(parentReview.evidence).join("; ") || parentReview.summary,
-    };
-    completed = parentReview.verdict === "ready_to_complete";
-    reviewedReport = {
-      ...afterReport,
-      reviews: [...(afterReport.reviews ?? []), parentReviewEntry].slice(-20),
-      lastReviewStep: afterReport.stepCount,
-      nextAction: completed
-        ? "Goal verified complete by parent review."
-        : parentReview.unresolvedGaps?.[0] ?? "Address parent verification gaps.",
-    };
+    reviewedReport = applyGoalReviewerReport(afterReport, parentReview) as StoredGoal;
+    completed = reviewedReport.status === "complete";
   } else if (report.outcome === "ready_for_review") {
     reviewedReport = {
       ...afterReport,

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   appendUniqueStrings,
   applyCriterionUpdates,
+  applyGoalAgentReport,
+  applyGoalReviewerReport,
   blockedStatusFromReport,
   buildGoalContextPacket,
   completionReadiness,
@@ -14,6 +16,42 @@ import {
   validateReview,
   waitingStatusFromReport,
 } from "../goal-core.mjs";
+
+const evidence = (kind = "test", ref = "node --test") => ({ kind, ref, status: "passed", summary: "Proof." });
+
+function baseGoal(overrides = {}) {
+  return {
+    id: "g1",
+    status: "active",
+    stepCount: 1,
+    summary: "start",
+    checklist: [],
+    criteria: [{ id: "CRIT-001", text: "Done", status: "pending" }],
+    reviews: [],
+    facts: [],
+    assumptions: [],
+    risks: [],
+    blockers: [],
+    evidence: [],
+    notes: [],
+    nextAction: "continue",
+    ...overrides,
+  };
+}
+
+function workerReport(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    role: "worker",
+    outcome: "progress",
+    summary: "Made progress.",
+    confidence: "medium",
+    actions: [{ summary: "Worked." }],
+    evidence: [evidence("file", "goal-core.mjs")],
+    nextAction: "Continue.",
+    ...overrides,
+  };
+}
 
 test("normalizeGoal adds new goal fields for old stored goals", () => {
   const goal = normalizeGoal({ id: "g1", status: "active" });
@@ -136,6 +174,135 @@ test("completionReadiness requires criteria evidence and ready terminal review",
   assert.equal(completionReadiness(base).ready, false);
   assert.equal(completionReadiness({ ...base, reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof" }] }).ready, true);
   assert.equal(completionReadiness({ ...base, status: "blocked", reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof" }] }).ready, false);
+});
+
+test("applyGoalAgentReport merges proposed durable state and evidence", () => {
+  const merged = applyGoalAgentReport(baseGoal(), workerReport({
+    proposedState: {
+      factsToAdd: ["Fact A"],
+      assumptionsToAdd: ["Assumption A"],
+      risksToAdd: ["Risk A"],
+      blockersToAdd: ["Potential blocker A"],
+      evidenceToAdd: [evidence("command", "npm test")],
+      checklist: [{ text: "Merge tested", done: true, evidence: "unit test" }],
+    },
+  }), {}, { now: "2026-01-01T00:00:00.000Z" });
+
+  assert.deepEqual(merged.facts, ["Fact A"]);
+  assert.deepEqual(merged.assumptions, ["Assumption A"]);
+  assert.deepEqual(merged.risks, ["Risk A"]);
+  assert.deepEqual(merged.blockers, ["Potential blocker A"]);
+  assert.equal(merged.checklist[0].done, true);
+  assert.equal(merged.evidence.length, 2);
+  assert.equal(merged.notes.at(-1).timestamp, "2026-01-01T00:00:00.000Z");
+});
+
+test("applyGoalAgentReport covers criteria add, update, and pass evidence", () => {
+  const merged = applyGoalAgentReport(baseGoal(), workerReport({
+    criteriaUpdates: [
+      { operation: "add", text: "New criterion", status: "pending" },
+      { operation: "update_status", id: "CRIT-001", status: "passed", evidence: [evidence("test", "node --test tests/goal-core.test.mjs")] },
+    ],
+  }));
+
+  assert.equal(merged.criteria[0].status, "passed");
+  assert.match(merged.criteria[0].evidence, /node --test/);
+  assert.equal(merged.criteria[1].id, "CRIT-002");
+  assert.equal(merged.criteria[1].status, "pending");
+});
+
+test("worker ready_for_review records readiness but does not complete goal by itself", () => {
+  const merged = applyGoalAgentReport(baseGoal({
+    criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }],
+  }), workerReport({ outcome: "ready_for_review", nextAction: undefined }));
+
+  assert.equal(merged.status, "active");
+  assert.equal(merged.reviews.at(-1).verdict, "ready_to_complete");
+  assert.equal(merged.nextAction, "Parent should verify readiness and complete the goal if evidence is sufficient.");
+  assert.equal(completionReadiness(merged).ready, true);
+});
+
+test("applyGoalReviewerReport completes only when reviewer verdict and readiness agree", () => {
+  const readyGoal = baseGoal({ criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] });
+  const ready = applyGoalReviewerReport(readyGoal, {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Ready.",
+    confidence: "high",
+    actions: [{ summary: "Reviewed." }],
+    evidence: [evidence("observation", "goal state")],
+    verdict: "ready_to_complete",
+    findings: ["Evidence sufficient."],
+    criteriaAssessment: [],
+  });
+  assert.equal(ready.status, "complete");
+
+  const missingCriterion = applyGoalReviewerReport(baseGoal(), {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Looks ready but criterion is pending.",
+    confidence: "medium",
+    actions: [{ summary: "Reviewed." }],
+    evidence: [evidence("observation", "goal state")],
+    verdict: "ready_to_complete",
+    findings: ["Review says ready."],
+    criteriaAssessment: [],
+  });
+  assert.equal(missingCriterion.status, "active");
+
+  const notReady = applyGoalReviewerReport(readyGoal, {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Gap found.",
+    confidence: "medium",
+    actions: [{ summary: "Reviewed." }],
+    evidence: [evidence("observation", "goal state")],
+    verdict: "not_ready",
+    findings: ["Missing docs."],
+    unresolvedGaps: ["Update docs."],
+    criteriaAssessment: [],
+  });
+  assert.equal(notReady.status, "active");
+  assert.equal(notReady.nextAction, "Update docs.");
+});
+
+test("applyGoalAgentReport follows waiting and blocked policies", () => {
+  const waitingDowngraded = applyGoalAgentReport(baseGoal(), workerReport({
+    outcome: "waiting",
+    wait: { condition: "CI running", resumeTrigger: "CI finishes" },
+    nextAction: undefined,
+  }), { policy: { waitingAllowed: false } });
+  assert.equal(waitingDowngraded.status, "active");
+  assert.match(waitingDowngraded.notes.at(-1).text, /treated as progress/);
+  assert.equal(waitingDowngraded.nextAction, "CI finishes");
+
+  const waitingAllowed = applyGoalAgentReport(baseGoal(), workerReport({
+    outcome: "waiting",
+    wait: { condition: "CI running", resumeTrigger: "CI finishes" },
+    nextAction: undefined,
+  }), { policy: { waitingAllowed: true } });
+  assert.equal(waitingAllowed.nextAction, "CI finishes");
+  assert.doesNotMatch(waitingAllowed.notes.at(-1).text, /treated as progress/);
+
+  const blocked = applyGoalAgentReport(baseGoal(), workerReport({
+    outcome: "blocked",
+    blocker: { reason: "Need user token", needed: "User provides token", evidence: [evidence("observation", "prompt")] },
+    nextAction: undefined,
+  }), { policy: { blockedPolicy: "external-blocker-only" } });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.stopReason, "blocked");
+  assert.deepEqual(blocked.blockers, ["Need user token"]);
+
+  const blockedDowngraded = applyGoalAgentReport(baseGoal(), workerReport({
+    outcome: "blocked",
+    blocker: { reason: "Prefer to stop", needed: "None", evidence: [evidence("observation", "local")] },
+    nextAction: undefined,
+  }), { policy: { blockedPolicy: "never" } });
+  assert.equal(blockedDowngraded.status, "active");
+  assert.match(blockedDowngraded.notes.at(-1).text, /treated as progress/);
 });
 
 test("validateGoalAgentReport accepts structured worker reports", () => {

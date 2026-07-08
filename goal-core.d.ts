@@ -7,6 +7,10 @@ export function blockedStatusFromReport(report: unknown, policy?: Record<string,
 export function waitingStatusFromReport(report: unknown, policy?: Record<string, unknown>): { waiting: boolean; reason?: string };
 export function recommendScaffoldId(objective?: string): string;
 export function buildGoalContextPacket(goal: unknown, scaffold?: unknown, request?: Record<string, unknown>): unknown;
+export function goalAgentReportEffectiveOutcome(report: unknown, policy?: Record<string, unknown>): unknown;
+export function criteriaInputsFromGoalAgentReport(report: unknown): { proposed: unknown[]; updates: unknown[] };
+export function applyGoalAgentReport(goal: unknown, report: unknown, scaffold?: unknown, options?: { now?: string }): unknown;
+export function applyGoalReviewerReport(goal: unknown, report: unknown, options?: { now?: string }): unknown;
 export function applyCriterionUpdates(criteria: unknown[], updates: unknown[]): unknown[];
 export function validateReview(review: unknown): void;
 export function completionReadiness(goal: unknown): { ready: boolean; missing: string[] };

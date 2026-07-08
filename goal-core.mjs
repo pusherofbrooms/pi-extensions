@@ -281,6 +281,107 @@ export function validateGoalAgentReport(report) {
   return report;
 }
 
+export function goalAgentReportEffectiveOutcome(report, policy = {}) {
+  if (report?.outcome === "waiting" && policy.waitingAllowed !== true) return "progress";
+  if (report?.outcome === "blocked") {
+    if (["never", "progress-only"].includes(policy.blockedPolicy)) return "progress";
+    if (["external-blocker-only", "strict"].includes(policy.blockedPolicy)) {
+      const hasBlocker = isNonEmptyString(report.blocker?.reason) && isNonEmptyString(report.blocker?.needed);
+      const hasEvidence = Array.isArray(report.blocker?.evidence) && report.blocker.evidence.length > 0;
+      if (!hasBlocker || !hasEvidence) return "progress";
+    }
+  }
+  return report?.outcome;
+}
+
+export function criteriaInputsFromGoalAgentReport(report) {
+  const proposed = [];
+  const updates = [];
+  for (const item of report?.criteriaUpdates ?? []) {
+    const evidence = formatEvidenceRefs(item.evidence).join("; ") || undefined;
+    if (item.operation === "add") {
+      proposed.push({ id: item.id, text: item.text ?? "", status: item.status, evidence });
+    } else if (item.id && item.status) {
+      updates.push({ id: item.id, status: item.status, evidence });
+    }
+  }
+  return { proposed, updates };
+}
+
+export function applyGoalAgentReport(goal, report, scaffold = {}, options = {}) {
+  const policy = scaffold?.policy ?? {};
+  const now = options.now ?? new Date().toISOString();
+  const effectiveOutcome = goalAgentReportEffectiveOutcome(report, policy);
+  const { proposed, updates } = criteriaInputsFromGoalAgentReport(report);
+  const criteria = mergeCriteria(goal.criteria ?? [], proposed, updates);
+  const reviewVerdict = effectiveOutcome === "blocked" ? "blocked" : effectiveOutcome === "ready_for_review" ? "ready_to_complete" : "not_ready";
+  const shouldRecordReview = effectiveOutcome === "ready_for_review" || effectiveOutcome === "blocked";
+  const evidenceSummary = formatEvidenceRefs([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])]).join("; ") || report.summary;
+  const review = shouldRecordReview ? {
+    timestamp: now,
+    verdict: reviewVerdict,
+    findings: [report.summary],
+    unresolvedGaps: reviewVerdict === "ready_to_complete" ? undefined : [report.blocker?.reason ?? report.nextAction ?? "Continue delegated goal execution."],
+    evidenceSummary,
+  } : undefined;
+
+  validateReview(review ?? { verdict: "not_ready", findings: ["Delegated progress recorded."], unresolvedGaps: ["Continue."], evidenceSummary: "Delegated progress recorded." });
+
+  const noteParts = [
+    `Delegated outcome: ${report.outcome}${effectiveOutcome !== report.outcome ? ` (treated as ${effectiveOutcome})` : ""}. ${report.summary}`,
+    report.actions?.length ? `Actions: ${report.actions.map((item) => item.summary).join("; ")}` : undefined,
+    report.wait?.condition ? `Wait condition: ${report.wait.condition}` : undefined,
+    report.wait?.resumeTrigger ? `Resume trigger: ${report.wait.resumeTrigger}` : undefined,
+  ].filter(Boolean);
+
+  return {
+    ...goal,
+    status: effectiveOutcome === "blocked" ? "blocked" : goal.status,
+    stopReason: effectiveOutcome === "blocked" ? "blocked" : goal.stopReason,
+    summary: report.summary,
+    checklist: report.proposedState?.checklist ?? goal.checklist,
+    criteria,
+    reviews: review ? [...(goal.reviews ?? []), review].slice(-20) : goal.reviews,
+    lastReviewStep: review ? goal.stepCount : goal.lastReviewStep,
+    facts: appendUniqueStrings(goal.facts, report.proposedState?.factsToAdd),
+    assumptions: appendUniqueStrings(goal.assumptions, report.proposedState?.assumptionsToAdd),
+    risks: appendUniqueStrings(goal.risks, report.proposedState?.risksToAdd),
+    blockers: effectiveOutcome === "blocked" ? appendUniqueStrings(goal.blockers, [report.blocker?.reason ?? report.summary]) : appendUniqueStrings(goal.blockers, report.proposedState?.blockersToAdd),
+    evidence: appendUniqueStrings(goal.evidence, formatEvidenceRefs([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])])),
+    nextAction: effectiveOutcome === "ready_for_review"
+      ? "Parent should verify readiness and complete the goal if evidence is sufficient."
+      : report.nextAction ?? report.wait?.resumeTrigger ?? report.wait?.condition ?? report.blocker?.needed ?? goal.nextAction,
+    notes: [...(goal.notes ?? []), { timestamp: now, text: noteParts.join(" ") }].slice(-50),
+    continuationQueued: false,
+  };
+}
+
+export function applyGoalReviewerReport(goal, report, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const review = {
+    timestamp: now,
+    verdict: report.verdict,
+    findings: report.findings ?? [report.summary],
+    unresolvedGaps: report.verdict === "ready_to_complete" ? undefined : report.unresolvedGaps ?? [report.summary],
+    evidenceSummary: formatEvidenceRefs(report.evidence).join("; ") || report.summary,
+  };
+  validateReview(review);
+  const reviewed = {
+    ...goal,
+    reviews: [...(goal.reviews ?? []), review].slice(-20),
+    lastReviewStep: goal.stepCount,
+    evidence: appendUniqueStrings(goal.evidence, formatEvidenceRefs(report.evidence)),
+    nextAction: report.verdict === "ready_to_complete"
+      ? "Goal verified complete by parent review."
+      : review.unresolvedGaps?.[0] ?? "Address parent verification gaps.",
+  };
+  const readiness = completionReadiness(reviewed);
+  return {
+    ...reviewed,
+    status: report.verdict === "ready_to_complete" && readiness.ready ? "complete" : reviewed.status,
+  };
+}
+
 export function formatEvidenceRef(evidence) {
   if (!evidence || typeof evidence !== "object") return "";
   const status = evidence.status ? `${evidence.status}: ` : "";
