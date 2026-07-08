@@ -158,7 +158,7 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
   assert.equal(packet.reportContractHint.lifecycleAuthority, "orchestrator");
 });
 
-test("buildGoalContextPacket carries prior observer reports for worker handoff", () => {
+test("buildGoalContextPacket carries prior role reports for worker handoff", () => {
   const observerReport = {
     schemaVersion: 1,
     role: "observer",
@@ -169,17 +169,30 @@ test("buildGoalContextPacket carries prior observer reports for worker handoff",
     evidence: [{ kind: "command", ref: "git status --short", status: "passed", summary: "Tracked changes observed." }],
     nextAction: "Worker should inspect the tracked changes before editing.",
   };
-  const packet = buildGoalContextPacket(baseGoal(), { id: "default", policy: { workflow: "observer-worker" } }, {
+  const researcherReport = {
+    schemaVersion: 1,
+    role: "researcher",
+    outcome: "progress",
+    summary: "Use existing goal-core helpers for workflow state.",
+    confidence: "high",
+    actions: [{ summary: "Read goal-core workflow selection." }],
+    evidence: [{ kind: "file", ref: "goal-core.mjs", status: "observed", summary: "Workflow helpers exist." }],
+    findings: ["Research-worker should feed findings to worker through priorRoleReports."],
+    openQuestions: [],
+    nextAction: "Worker should implement using existing workflow helpers.",
+  };
+  const packet = buildGoalContextPacket(baseGoal(), { id: "default", policy: { workflow: "research-worker" } }, {
     role: "worker",
-    action: "continue_after_observation",
-    workflow: "observer-worker",
-    workflowRoles: ["observer", "worker"],
-    priorRoleReports: [observerReport],
+    action: "continue_after_research",
+    workflow: "research-worker",
+    workflowRoles: ["researcher", "worker"],
+    priorRoleReports: [observerReport, researcherReport],
   });
 
   assert.equal(packet.request.role, "worker");
   assert.equal(packet.request.priorRoleReports[0].role, "observer");
-  assert.match(packet.request.priorRoleReports[0].summary, /uncommitted tracked changes/);
+  assert.equal(packet.request.priorRoleReports[1].role, "researcher");
+  assert.match(packet.request.priorRoleReports[1].findings[0], /Research-worker/);
 });
 
 test("selectGoalWorkflowPlan supports scaffold workflow metadata safely", () => {
@@ -363,6 +376,54 @@ test("validateGoalAgentReport accepts structured observer reports", () => {
     },
     nextAction: "Worker should proceed with current-state evidence in mind.",
   }));
+});
+
+test("validateGoalAgentReport accepts structured researcher reports", () => {
+  assert.doesNotThrow(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "researcher",
+    outcome: "progress",
+    summary: "Existing workflow helpers support research-worker handoff.",
+    confidence: "high",
+    actions: [{
+      summary: "Inspected workflow selection and context packet helpers.",
+      evidence: [{ kind: "file", ref: "goal-core.mjs", status: "observed", summary: "Research-worker plan and priorRoleReports are represented." }],
+    }],
+    evidence: [{ kind: "file", ref: "goal-core.mjs", status: "observed", summary: "Source supports selected workflow roles." }],
+    findings: ["Use priorRoleReports to pass research findings to the worker."],
+    openQuestions: ["Whether future doctrine should become first-class durable state."],
+    recommendedDoctrine: ["Researchers should only propose state changes through report fields."],
+    proposedState: {
+      factsToAdd: ["Research-worker workflow has a researcher role before the worker."],
+      assumptionsToAdd: ["Report fields are sufficient for bounded doctrine until a durable doctrine store exists."],
+      risksToAdd: ["Research findings may become stale if worker execution is delayed."],
+    },
+    nextAction: "Worker should implement the researched path.",
+  }));
+});
+
+test("validateGoalAgentReport rejects researcher completion claims and evidence-free progress", () => {
+  assert.throws(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "researcher",
+    outcome: "ready_for_review",
+    summary: "Looks complete.",
+    confidence: "medium",
+    actions: [],
+    evidence: [{ kind: "observation", ref: "goal", summary: "Observed." }],
+  }), /Researcher report outcome/);
+
+  assert.throws(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "researcher",
+    outcome: "progress",
+    summary: "Found something.",
+    confidence: "medium",
+    actions: [{ summary: "Researched." }],
+    evidence: [],
+    findings: ["A finding."],
+    nextAction: "Continue.",
+  }), /research evidence/);
 });
 
 test("validateGoalAgentReport rejects observer completion claims and evidence-free progress", () => {

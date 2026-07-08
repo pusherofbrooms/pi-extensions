@@ -292,9 +292,16 @@ export function validateGoalAgentReport(report) {
     if (!isNonEmptyString(report.wait?.condition)) throw new Error("Waiting reports require wait.condition.");
     if (!isNonEmptyString(report.wait?.resumeTrigger)) throw new Error("Waiting reports require wait.resumeTrigger.");
   }
+  if (report.openQuestions !== undefined) validateStringArray(report.openQuestions, "openQuestions");
+  if (report.recommendedDoctrine !== undefined) validateStringArray(report.recommendedDoctrine, "recommendedDoctrine");
   if (report.role === "observer") {
     if (!["progress", "no_progress", "waiting", "blocked"].includes(report.outcome)) throw new Error("Observer report outcome must be progress, no_progress, waiting, or blocked.");
     if (report.outcome === "progress" && report.evidence.length === 0 && !report.actions.some((item) => item.evidence?.length)) throw new Error("Observer progress reports require inspection evidence.");
+  }
+  if (report.role === "researcher") {
+    if (!["progress", "no_progress", "waiting", "blocked"].includes(report.outcome)) throw new Error("Researcher report outcome must be progress, no_progress, waiting, or blocked.");
+    validateStringArray(report.findings, "findings");
+    if (report.outcome === "progress" && report.evidence.length === 0 && !report.actions.some((item) => item.evidence?.length)) throw new Error("Researcher progress reports require research evidence.");
   }
   if (report.role === "reviewer") {
     if (!["ready_to_complete", "not_ready", "blocked"].includes(report.verdict)) throw new Error("Reviewer report verdict is invalid.");

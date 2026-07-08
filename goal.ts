@@ -21,6 +21,7 @@ const GOALS_DIR = join(STORE_DIR, "goals");
 const BUNDLED_SCAFFOLDS_DIR = join(MODULE_DIR, "scaffolds");
 const GOAL_WORKER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-worker.md");
 const GOAL_OBSERVER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-observer.md");
+const GOAL_RESEARCHER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-researcher.md");
 const GOAL_PARENT_REVIEWER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-parent-reviewer.md");
 const USER_SCAFFOLDS_DIR = join(homedir(), ".pi", "agent", "scaffolds");
 const PROJECT_SCAFFOLDS_DIR = ".pi/scaffolds";
@@ -107,6 +108,8 @@ type GoalAgentReport = {
   unresolvedGaps?: string[];
   criteriaAssessment?: { id: string; status: "proven" | "not_proven" | "contradicted" | "missing_evidence"; reason: string; evidence?: GoalEvidenceRef[] }[];
   scopeConcerns?: string[];
+  openQuestions?: string[];
+  recommendedDoctrine?: string[];
 };
 
 type GoalIteration = {
@@ -473,6 +476,8 @@ function checkReportForSecrets(report: GoalAgentReport): string | undefined {
     ...(report.findings ?? []),
     ...(report.unresolvedGaps ?? []),
     ...(report.scopeConcerns ?? []),
+    ...(report.openQuestions ?? []),
+    ...(report.recommendedDoctrine ?? []),
     ...(report.criteriaAssessment ?? []).flatMap((item) => [item.id, item.reason]),
     ...evidenceText(evidenceRefs),
   ];
@@ -519,6 +524,24 @@ function observerPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan =
   return `Inspect current state for this autonomous goal before worker execution.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: ${workflowPlan.roles.join(" -> ")}\n- observer action: inspect_current_state\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nObserver contract:\n- Inspect stale external, repository, runtime, or project state that may affect the worker's next action.\n- Do not make major changes. Do not edit files, write files, commit, push, deploy, install dependencies, or perform destructive actions.\n- Report current state, bottlenecks, opportunities, risks, evidence, and recommended worker actions using the schema-v1 envelope.\n- Use proposedState.factsToAdd for durable observations, proposedState.risksToAdd for risks, proposedState.blockersToAdd for non-terminal bottlenecks, and nextAction for the recommended worker action.\n- Do not update goal lifecycle state. The parent owns status, reviews, and completion.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked.\n{\n  "schemaVersion": 1,\n  "role": "observer",\n  "outcome": "progress",\n  "summary": "concise current-state observation",\n  "confidence": "medium",\n  "actions": [{ "summary": "inspection performed", "evidence": [{ "kind": "command", "ref": "command run", "status": "passed", "summary": "what was observed" }] }],\n  "evidence": [{ "kind": "observation", "ref": "current state", "status": "observed", "summary": "what this proves" }],\n  "proposedState": {\n    "factsToAdd": ["current-state facts"],\n    "risksToAdd": ["risks"],\n    "blockersToAdd": ["non-terminal bottlenecks"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "observed", "summary": "supporting evidence" }]\n  },\n  "blocker": { "reason": "required for blocked", "needed": "external/user action needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "recommended worker action unless blocked or waiting"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
+function researcherPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan = selectGoalWorkflowPlan(scaffold)): string {
+  const contextPacket = buildGoalContextPacket(goalForModel(goal), scaffold, {
+    role: "researcher",
+    action: "resolve_uncertainty",
+    workflow: workflowPlan.workflow,
+    workflowRoles: workflowPlan.roles,
+    operatingCycle: workflowPlan.operatingCycle === true,
+    reportContractHint: {
+      schemaVersion: 1,
+      role: "researcher",
+      returnOnlyJson: true,
+      allowedOutcomes: ["progress", "no_progress", "waiting", "blocked"],
+      lifecycleAuthority: "orchestrator",
+    },
+  });
+  return `Research strategy, API, or domain uncertainty for this autonomous goal before worker execution.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: ${workflowPlan.roles.join(" -> ")}\n- researcher action: resolve_uncertainty\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nResearcher contract:\n- Answer bounded strategy, API, domain, or implementation uncertainty that affects the next worker action.\n- Prefer local source/docs/specs. Use lightweight commands only for read-only discovery.\n- Do not mutate project state except through this report. Do not edit files, write files, commit, push, install dependencies, or perform destructive actions.\n- Report findings, open questions, evidence, confidence, recommended doctrine/state updates, and the recommended worker action using the schema-v1 envelope.\n- Use findings for research conclusions, openQuestions for unresolved uncertainty, proposedState.factsToAdd/assumptionsToAdd/risksToAdd for durable state updates, recommendedDoctrine for reusable guidance, and nextAction for the recommended worker action.\n- Do not update goal lifecycle state. The parent owns status, reviews, and completion.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked.\n{\n  "schemaVersion": 1,\n  "role": "researcher",\n  "outcome": "progress",\n  "summary": "concise research result",\n  "confidence": "medium",\n  "actions": [{ "summary": "research performed", "evidence": [{ "kind": "file", "ref": "path", "status": "observed", "summary": "what was learned" }] }],\n  "evidence": [{ "kind": "observation", "ref": "research basis", "status": "observed", "summary": "what this supports" }],\n  "findings": ["research conclusion"],\n  "openQuestions": ["remaining uncertainty, if any"],\n  "recommendedDoctrine": ["reusable guidance, if any"],\n  "proposedState": {\n    "factsToAdd": ["durable facts"],\n    "assumptionsToAdd": ["assumptions"],\n    "risksToAdd": ["risks"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "observed", "summary": "supporting evidence" }]\n  },\n  "blocker": { "reason": "required for blocked", "needed": "external/user action needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "recommended worker action unless blocked or waiting"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+}
+
 async function loadAgentSystemPrompt(path: string): Promise<string> {
   const raw = await readFile(path, "utf8");
   return parseFrontmatter(raw).body;
@@ -551,6 +574,17 @@ async function runGoalObserver(goal: StoredGoal, scaffold: GoalScaffold, ctx: Ex
     ["read", "grep", "find", "ls", "bash"],
   );
   return { report: parseGoalAgentReport(result.text, "observer"), sessionFile: result.sessionFile };
+}
+
+async function runGoalResearcher(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold)): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+  const result = await runIsolatedAgent(
+    goal,
+    ctx,
+    GOAL_RESEARCHER_AGENT_PATH,
+    researcherPrompt(goal, scaffold, workflowPlan),
+    ["read", "grep", "find", "ls", "bash"],
+  );
+  return { report: parseGoalAgentReport(result.text, "researcher"), sessionFile: result.sessionFile };
 }
 
 async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), priorRoleReports: GoalAgentReport[] = []): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
@@ -606,9 +640,13 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   const observerRun = workflowPlan.roles[0] === "observer" ? await runGoalObserver(goal, scaffold, ctx, workflowPlan) : undefined;
   const observerReport = observerRun?.report;
   const afterObservation = observerReport ? applyDelegatedReport(goal, observerReport, scaffold) : goal;
-  const workerRun = await runGoalWorker(afterObservation, scaffold, ctx, workflowPlan, observerReport ? [observerReport] : []);
+  const researcherRun = workflowPlan.roles[0] === "researcher" ? await runGoalResearcher(afterObservation, scaffold, ctx, workflowPlan) : undefined;
+  const researcherReport = researcherRun?.report;
+  const afterResearch = researcherReport ? applyDelegatedReport(afterObservation, researcherReport, scaffold) : afterObservation;
+  const priorRoleReports = [observerReport, researcherReport].filter(Boolean) as GoalAgentReport[];
+  const workerRun = await runGoalWorker(afterResearch, scaffold, ctx, workflowPlan, priorRoleReports);
   const report = workerRun.report;
-  const afterReport = applyDelegatedReport(afterObservation, report, scaffold);
+  const afterReport = applyDelegatedReport(afterResearch, report, scaffold);
   const nextStep = goal.stepCount + 1;
   const readiness = report.outcome === "ready_for_review" ? completionReadiness(afterReport) : { ready: false, missing: [] as string[] };
 
@@ -645,6 +683,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   const iterationTimestamp = nowIso();
   const sessionRefs: GoalSubagentSessionRef[] = [
     ...(observerRun ? [{ role: "observer" as const, timestamp: iterationTimestamp, sessionFile: observerRun.sessionFile }] : []),
+    ...(researcherRun ? [{ role: "researcher" as const, timestamp: iterationTimestamp, sessionFile: researcherRun.sessionFile }] : []),
     { role: "worker", timestamp: iterationTimestamp, sessionFile: workerRun.sessionFile },
     ...(parentReview || parentReviewSessionFile ? [{ role: "reviewer" as const, timestamp: iterationTimestamp, sessionFile: parentReviewSessionFile }] : []),
   ];
@@ -654,7 +693,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     roles: sessionRefs.map((ref) => ref.role),
     outcome: report.outcome,
     summary: report.summary,
-    evidence: evidenceText([...(observerReport?.evidence ?? []), ...(report.evidence ?? [])]),
+    evidence: evidenceText([...(observerReport?.evidence ?? []), ...(researcherReport?.evidence ?? []), ...(report.evidence ?? [])]),
     nextAction: reviewedReport.nextAction,
     sessionRefs,
   });
@@ -674,7 +713,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
         ? `Delegated worker proposed completion, but parent verification says not ready.\n\n${parentReview.commentary ?? parentReview.summary}\n\nGaps:\n${(parentReview.unresolvedGaps ?? []).map((item) => `- ${item}`).join("\n")}`
         : `Delegated worker thinks goal may be complete, but readiness check found gaps:\n${readiness.missing.map((item) => `- ${item}`).join("\n")}`
       : `Delegated goal step ${nextStep}: ${report.outcome}\n${report.summary}`;
-  pi.sendMessage({ customType: "goal-delegated-step", content: message, display: true, details: { observerReport, report, parentReview, goal: goalForModel(updated), path: goalPath(updated.id) } });
+  pi.sendMessage({ customType: "goal-delegated-step", content: message, display: true, details: { observerReport, researcherReport, report, parentReview, goal: goalForModel(updated), path: goalPath(updated.id) } });
 
   if (completed) return;
   if (reachedCap && updated.status === "paused") {
