@@ -6,7 +6,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
 import { runAgentSession } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
-import { appendUniqueStrings, applyCriterionUpdates, blockedStatusFromReport, completionReadiness, mergeCriteria, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, validateReview, waitingStatusFromReport } from "./goal-core.mjs";
+import { appendUniqueStrings, applyCriterionUpdates, completionReadiness, formatEvidenceRefs, mergeCriteria, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, validateGoalAgentReport, validateReview } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -58,16 +58,59 @@ type GoalNoteEntry = {
 };
 
 type GoalSubagentSessionRef = {
-  role: "worker" | "parent-reviewer";
+  role: "worker" | "reviewer";
   timestamp: string;
   sessionFile?: string;
+};
+
+type GoalAgentOutcome = "progress" | "no_progress" | "waiting" | "blocked" | "ready_for_review" | "review_complete";
+
+type GoalEvidenceRef = {
+  kind: "command" | "file" | "test" | "url" | "session" | "observation" | "artifact";
+  ref: string;
+  summary: string;
+  status?: "passed" | "failed" | "observed" | "created" | "modified" | "not_run";
+};
+
+type GoalAgentReport = {
+  schemaVersion: 1;
+  role: "worker" | "reviewer" | "observer" | "researcher" | "experimenter";
+  outcome: GoalAgentOutcome;
+  summary: string;
+  confidence: "low" | "medium" | "high";
+  actions: { summary: string; evidence?: GoalEvidenceRef[] }[];
+  evidence: GoalEvidenceRef[];
+  proposedState?: {
+    factsToAdd?: string[];
+    assumptionsToAdd?: string[];
+    risksToAdd?: string[];
+    blockersToAdd?: string[];
+    evidenceToAdd?: GoalEvidenceRef[];
+    checklist?: GoalChecklistItem[];
+  };
+  criteriaUpdates?: {
+    operation: "add" | "update_status";
+    id?: string;
+    text?: string;
+    status?: GoalCriterionStatus;
+    evidence?: GoalEvidenceRef[];
+  }[];
+  blocker?: { reason: string; needed: string; evidence: GoalEvidenceRef[] };
+  wait?: { condition: string; resumeTrigger: string };
+  nextAction?: string;
+  verdict?: "ready_to_complete" | "not_ready" | "blocked";
+  commentary?: string;
+  findings?: string[];
+  unresolvedGaps?: string[];
+  criteriaAssessment?: { id: string; status: "proven" | "not_proven" | "contradicted" | "missing_evidence"; reason: string; evidence?: GoalEvidenceRef[] }[];
+  scopeConcerns?: string[];
 };
 
 type GoalIteration = {
   step: number;
   timestamp: string;
   roles: Array<GoalSubagentSessionRef["role"]>;
-  outcome: DelegatedGoalReport["outcome"];
+  outcome: GoalAgentOutcome;
   summary: string;
   evidence: string[];
   nextAction: string;
@@ -133,43 +176,7 @@ type GoalScaffold = {
   policy: ScaffoldPolicy;
 };
 
-type DelegatedGoalReport = {
-  outcome: "progress" | "waiting" | "blocked" | "ready_to_complete" | "no_progress";
-  summary: string;
-  actionsTaken?: string[];
-  evidence?: string[];
-  checklist?: GoalChecklistItem[];
-  facts?: string[];
-  assumptions?: string[];
-  risks?: string[];
-  blockers?: string[];
-  nextAction?: string;
-  criteria?: { id?: string; text: string; status?: GoalCriterionStatus; evidence?: string }[];
-  criterionUpdates?: { id: string; status: GoalCriterionStatus; evidence?: string }[];
-  review?: {
-    findings: string[];
-    evidenceSummary: string;
-    unresolvedGaps?: string[];
-  };
-  completionAssessment?: {
-    ready: boolean;
-    confidence?: "low" | "medium" | "high";
-    reason: string;
-    remainingGaps?: string[];
-    verificationNeeded?: string[];
-  };
-  waitCondition?: string;
-  resumeTrigger?: string;
-  opportunitiesExhausted?: string[];
-};
 
-type ParentReviewReport = {
-  verdict: "ready_to_complete" | "not_ready";
-  commentary: string;
-  findings: string[];
-  unresolvedGaps?: string[];
-  evidenceSummary: string;
-};
 
 const FALLBACK_DEFAULT_SCAFFOLD: GoalScaffold = {
   id: "default",
@@ -426,72 +433,52 @@ function extractJsonObject(text: string): string {
   throw new Error("Goal worker did not return a JSON object.");
 }
 
-function parseDelegatedReport(text: string): DelegatedGoalReport {
-  const report = JSON.parse(extractJsonObject(text)) as DelegatedGoalReport;
-  if (!report || typeof report !== "object") throw new Error("Goal worker report must be an object.");
-  if (!["progress", "waiting", "blocked", "ready_to_complete", "no_progress"].includes(report.outcome)) {
-    throw new Error(`Invalid goal worker outcome: ${(report as { outcome?: unknown }).outcome}`);
-  }
-  if (!report.summary?.trim()) throw new Error("Goal worker report requires summary.");
-  if (report.outcome !== "ready_to_complete" && report.outcome !== "blocked" && !report.nextAction?.trim()) {
-    throw new Error("Goal worker report requires nextAction unless blocked or ready_to_complete.");
-  }
+function parseGoalAgentReport(text: string, expectedRole: GoalAgentReport["role"]): GoalAgentReport {
+  const report = validateGoalAgentReport(JSON.parse(extractJsonObject(text))) as GoalAgentReport;
+  if (report.role !== expectedRole) throw new Error(`Expected ${expectedRole} report, got ${report.role}.`);
   return report;
 }
 
-function parseParentReviewReport(text: string): ParentReviewReport {
-  const report = JSON.parse(extractJsonObject(text)) as ParentReviewReport;
-  if (!report || typeof report !== "object") throw new Error("Parent review report must be an object.");
-  if (!["ready_to_complete", "not_ready"].includes(report.verdict)) throw new Error(`Invalid parent review verdict: ${(report as { verdict?: unknown }).verdict}`);
-  if (!report.commentary?.trim()) throw new Error("Parent review report requires commentary.");
-  validateReview({
-    verdict: report.verdict,
-    findings: report.findings,
-    unresolvedGaps: report.verdict === "not_ready" ? report.unresolvedGaps : undefined,
-    evidenceSummary: report.evidenceSummary,
-  });
-  return report;
+function evidenceText(items: GoalEvidenceRef[] | undefined): string[] {
+  return formatEvidenceRefs(items) as string[];
 }
 
-function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
-}
-
-function checkReportForSecrets(report: DelegatedGoalReport): string | undefined {
+function checkReportForSecrets(report: GoalAgentReport): string | undefined {
+  const evidenceRefs = [
+    ...(report.evidence ?? []),
+    ...(report.proposedState?.evidenceToAdd ?? []),
+    ...(report.blocker?.evidence ?? []),
+    ...(report.actions ?? []).flatMap((item) => item.evidence ?? []),
+    ...(report.criteriaUpdates ?? []).flatMap((item) => item.evidence ?? []),
+    ...(report.criteriaAssessment ?? []).flatMap((item) => item.evidence ?? []),
+  ];
   const texts = [
     report.summary,
     report.nextAction,
-    report.waitCondition,
-    report.resumeTrigger,
-    report.completionAssessment?.reason,
-    ...(report.actionsTaken ?? []),
-    ...(report.evidence ?? []),
-    ...(report.facts ?? []),
-    ...(report.assumptions ?? []),
-    ...(report.risks ?? []),
-    ...(report.blockers ?? []),
-    ...(report.opportunitiesExhausted ?? []),
-    ...(report.completionAssessment?.remainingGaps ?? []),
-    ...(report.completionAssessment?.verificationNeeded ?? []),
-    ...(report.review?.findings ?? []),
-    report.review?.evidenceSummary,
-    ...(report.review?.unresolvedGaps ?? []),
-    ...(report.checklist ?? []).flatMap((item) => [item.text, item.evidence]),
-    ...(report.criteria ?? []).flatMap((item) => [item.id, item.text, item.evidence]),
-    ...(report.criterionUpdates ?? []).flatMap((item) => [item.id, item.evidence]),
+    report.blocker?.reason,
+    report.blocker?.needed,
+    report.wait?.condition,
+    report.wait?.resumeTrigger,
+    report.commentary,
+    ...(report.actions ?? []).map((item) => item.summary),
+    ...(report.proposedState?.factsToAdd ?? []),
+    ...(report.proposedState?.assumptionsToAdd ?? []),
+    ...(report.proposedState?.risksToAdd ?? []),
+    ...(report.proposedState?.blockersToAdd ?? []),
+    ...(report.proposedState?.checklist ?? []).flatMap((item) => [item.text, item.evidence]),
+    ...(report.criteriaUpdates ?? []).flatMap((item) => [item.id, item.text]),
+    ...(report.findings ?? []),
+    ...(report.unresolvedGaps ?? []),
+    ...(report.scopeConcerns ?? []),
+    ...(report.criteriaAssessment ?? []).flatMap((item) => [item.id, item.reason]),
+    ...evidenceText(evidenceRefs),
   ];
-  return texts.map((text) => checkNoSecrets(text, "goal worker report")).find(Boolean);
-}
-
-function checkParentReviewForSecrets(report: ParentReviewReport): string | undefined {
-  const texts = [report.commentary, report.evidenceSummary, ...report.findings, ...(report.unresolvedGaps ?? [])];
-  return texts.map((text) => checkNoSecrets(text, "parent review report")).find(Boolean);
+  return texts.map((text) => checkNoSecrets(text, "goal agent report")).find(Boolean);
 }
 
 function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold): string {
   const needsReview = !!goal.reviewEvery && goal.stepCount > 0 && goal.stepCount % goal.reviewEvery === 0 && goal.lastReviewStep !== goal.stepCount;
-  return `${needsReview ? "Perform a strategic review for" : "Execute the next delegated continuation for"} this autonomous goal.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state:\n${renderGoalForModel(goal)}\n\nScaffold: ${scaffold.id} (${scaffold.source})\nPolicy:\n${scaffoldPolicyText(scaffold)}\n\nInstructions:\n${scaffold.body}\n\nTurn contract:\n${needsReview ? "- This is a scheduled strategic review. Do not do broad new execution unless needed to verify state. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next focus.\n" : ""}- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteria in the criteria field before or alongside substantive progress.\n- If you think the goal is done, set outcome to ready_to_complete and include concrete evidence plus verificationNeeded for the parent.\n\nReturn only valid JSON with this shape. Allowed outcome values: progress, waiting, blocked, ready_to_complete, no_progress. Allowed criterion status values: pending, passed, failed. Allowed confidence values: low, medium, high.\n{\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "actionsTaken": ["..."],\n  "evidence": ["file paths, command results, produced content, or other concrete evidence"],\n  "checklist": [{ "text": "...", "done": true, "evidence": "..." }],\n  "facts": ["durable facts to retain"],\n  "assumptions": ["assumptions to retain"],\n  "risks": ["risks to retain"],\n  "blockers": ["blockers to retain"],\n  "nextAction": "next concrete action unless blocked or ready_to_complete",\n  "criteria": [{ "id": "optional criterion id", "text": "success criterion", "status": "pending", "evidence": "required when passed" }],\n  "criterionUpdates": [{ "id": "existing criterion id", "status": "passed", "evidence": "required when passed" }],\n  "review": { "findings": ["..."], "evidenceSummary": "...", "unresolvedGaps": ["..."] },\n  "completionAssessment": { "ready": false, "confidence": "medium", "reason": "...", "remainingGaps": ["..."], "verificationNeeded": ["..."] },\n  "waitCondition": "for waiting outcomes",\n  "resumeTrigger": "for waiting outcomes",\n  "opportunitiesExhausted": ["for operations-style cycles"]\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `${needsReview ? "Perform a strategic review for" : "Execute the next delegated continuation for"} this autonomous goal.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state:\n${renderGoalForModel(goal)}\n\nScaffold: ${scaffold.id} (${scaffold.source})\nPolicy:\n${scaffoldPolicyText(scaffold)}\n\nInstructions:\n${scaffold.body}\n\nTurn contract:\n${needsReview ? "- This is a scheduled strategic review. Do not do broad new execution unless needed to verify state. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next focus.\n" : ""}- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteriaUpdates with operation=add before or alongside substantive progress.\n- If you think the goal is done, set outcome to ready_for_review and include concrete evidence.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked, ready_for_review.\n{\n  "schemaVersion": 1,\n  "role": "worker",\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "confidence": "medium",\n  "actions": [{ "summary": "what you did", "evidence": [{ "kind": "file", "ref": "path", "status": "modified", "summary": "what changed" }] }],\n  "evidence": [{ "kind": "command", "ref": "command run", "status": "passed", "summary": "result" }],\n  "proposedState": {\n    "factsToAdd": ["durable facts"],\n    "assumptionsToAdd": ["assumptions"],\n    "risksToAdd": ["risks"],\n    "blockersToAdd": ["non-terminal blockers/concerns"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "created", "summary": "evidence" }],\n    "checklist": [{ "text": "item", "done": true, "evidence": "brief proof" }]\n  },\n  "criteriaUpdates": [{ "operation": "add", "text": "success criterion", "status": "pending", "evidence": [] }],\n  "blocker": { "reason": "required for blocked", "needed": "what external/user action is needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "next concrete action unless blocked, waiting, or ready_for_review"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
 async function loadAgentSystemPrompt(path: string): Promise<string> {
@@ -517,7 +504,7 @@ async function runIsolatedAgent(
   return { text: result.finalText, sessionFile: result.sessionFile };
 }
 
-async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext): Promise<{ report: DelegatedGoalReport; sessionFile?: string }> {
+async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
@@ -525,14 +512,14 @@ async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: Exte
     delegatedPrompt(goal, scaffold),
     ["read", "grep", "find", "ls", "bash", "edit", "write"],
   );
-  return { report: parseDelegatedReport(result.text), sessionFile: result.sessionFile };
+  return { report: parseGoalAgentReport(result.text, "worker"), sessionFile: result.sessionFile };
 }
 
-function parentReviewPrompt(goal: StoredGoal, workerReport: DelegatedGoalReport): string {
-  return `A delegated goal worker believes this autonomous goal is ready to complete. Perform a concise parent-side verification pass.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state after worker report:\n${renderGoalForModel(goal)}\n\nWorker report:\n${JSON.stringify(workerReport, null, 2)}\n\nVerification contract:\n- Compare the objective, criteria, evidence, checklist, and worker report.\n- Inspect files or run lightweight commands only if needed to verify concrete claims.\n- Do not modify files.\n- Return not_ready if required evidence is missing, criteria are not actually satisfied, or verification is uncertain.\n- Return ready_to_complete only if the goal is genuinely done.\n- Include brief parent-agent commentary suitable to show the user when the goal completes or needs more work.\n\nReturn only valid JSON with this shape. Allowed verdict values: ready_to_complete, not_ready.\n{\n  "verdict": "ready_to_complete",\n  "commentary": "brief user-facing parent commentary",\n  "findings": ["..."],\n  "unresolvedGaps": ["required when not_ready"],\n  "evidenceSummary": "concrete verification evidence"\n}\n\nOmit unresolvedGaps when ready_to_complete. Do not include Markdown. Do not include commentary outside the JSON object.`;
+function parentReviewPrompt(goal: StoredGoal, workerReport: GoalAgentReport): string {
+  return `A delegated goal worker believes this autonomous goal is ready for review. Perform a concise parent-side verification pass.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state after worker report:\n${renderGoalForModel(goal)}\n\nWorker report:\n${JSON.stringify(workerReport, null, 2)}\n\nVerification contract:\n- Compare the objective, criteria, evidence, checklist, and worker report.\n- Inspect files or run lightweight commands only if needed to verify concrete claims.\n- Do not modify files.\n- Return not_ready if required evidence is missing, criteria are not actually satisfied, or verification is uncertain.\n- Return ready_to_complete only if the goal is genuinely done.\n- Include brief commentary suitable to show the user when the goal completes or needs more work.\n\nReturn only valid JSON using schemaVersion 1. Use role=reviewer and outcome=review_complete.\n{\n  "schemaVersion": 1,\n  "role": "reviewer",\n  "outcome": "review_complete",\n  "summary": "concise review result",\n  "confidence": "medium",\n  "actions": [{ "summary": "verification performed" }],\n  "evidence": [{ "kind": "observation", "ref": "goal state", "status": "observed", "summary": "what proves the verdict" }],\n  "verdict": "ready_to_complete",\n  "commentary": "brief user-facing parent commentary",\n  "findings": ["..."],\n  "criteriaAssessment": [{ "id": "CRIT-001", "status": "proven", "reason": "why", "evidence": [{ "kind": "test", "ref": "command", "status": "passed", "summary": "proof" }] }],\n  "unresolvedGaps": ["required unless ready_to_complete"],\n  "scopeConcerns": []\n}\n\nOmit unresolvedGaps when ready_to_complete. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
-async function runParentReview(goal: StoredGoal, workerReport: DelegatedGoalReport, ctx: ExtensionContext): Promise<{ report: ParentReviewReport; sessionFile?: string }> {
+async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, ctx: ExtensionContext): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
@@ -540,46 +527,52 @@ async function runParentReview(goal: StoredGoal, workerReport: DelegatedGoalRepo
     parentReviewPrompt(goal, workerReport),
     ["read", "grep", "find", "ls", "bash"],
   );
-  const report = parseParentReviewReport(result.text);
-  const secretError = checkParentReviewForSecrets(report);
+  const report = parseGoalAgentReport(result.text, "reviewer");
+  const secretError = checkReportForSecrets(report);
   if (secretError) throw new Error(`Refusing to store parent review report: ${secretError}.`);
   return { report, sessionFile: result.sessionFile };
 }
 
-function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport, scaffold: GoalScaffold): StoredGoal {
+function criteriaInputsFromReport(report: GoalAgentReport): { proposed: { id?: string; text: string; status?: GoalCriterionStatus; evidence?: string }[]; updates: { id: string; status: GoalCriterionStatus; evidence?: string }[] } {
+  const proposed: { id?: string; text: string; status?: GoalCriterionStatus; evidence?: string }[] = [];
+  const updates: { id: string; status: GoalCriterionStatus; evidence?: string }[] = [];
+  for (const item of report.criteriaUpdates ?? []) {
+    const evidence = evidenceText(item.evidence).join("; ") || undefined;
+    if (item.operation === "add") {
+      proposed.push({ id: item.id, text: item.text ?? "", status: item.status, evidence });
+    } else if (item.id && item.status) {
+      updates.push({ id: item.id, status: item.status, evidence });
+    }
+  }
+  return { proposed, updates };
+}
+
+function applyDelegatedReport(goal: StoredGoal, report: GoalAgentReport, scaffold: GoalScaffold): StoredGoal {
   const secretError = checkReportForSecrets(report);
   if (secretError) throw new Error(`Refusing to store goal worker report: ${secretError}.`);
 
-  const blockDecision = blockedStatusFromReport(report, scaffold.policy);
-  const waitDecision = waitingStatusFromReport(report, scaffold.policy);
-  const effectiveOutcome = report.outcome === "blocked" && !blockDecision.blocked
-    ? "progress"
-    : report.outcome === "waiting" && !waitDecision.waiting
-      ? "progress"
-      : report.outcome;
-  const criteria = mergeCriteria(goal.criteria ?? [], report.criteria ?? [], report.criterionUpdates ?? []) as GoalCriterion[];
-  const reviewVerdict: GoalReviewVerdict = effectiveOutcome === "blocked" ? "blocked" : effectiveOutcome === "ready_to_complete" ? "ready_to_complete" : "not_ready";
-  const shouldRecordReview = effectiveOutcome === "ready_to_complete" || report.outcome === "blocked" || !!report.review;
-  const unresolvedGaps = report.review?.unresolvedGaps
-    ?? report.completionAssessment?.remainingGaps
-    ?? (blockDecision.reason ? [blockDecision.reason] : undefined)
-    ?? (waitDecision.reason ? [waitDecision.reason] : undefined)
-    ?? (effectiveOutcome === "ready_to_complete" ? undefined : [report.nextAction ?? report.waitCondition ?? "Continue delegated goal execution."]);
+  const waitingAllowed = scaffold.policy.waitingAllowed === true;
+  const effectiveOutcome: GoalAgentOutcome = report.outcome === "waiting" && !waitingAllowed ? "progress" : report.outcome;
+  const { proposed, updates } = criteriaInputsFromReport(report);
+  const criteria = mergeCriteria(goal.criteria ?? [], proposed, updates) as GoalCriterion[];
+  const reviewVerdict: GoalReviewVerdict = effectiveOutcome === "blocked" ? "blocked" : effectiveOutcome === "ready_for_review" ? "ready_to_complete" : "not_ready";
+  const shouldRecordReview = effectiveOutcome === "ready_for_review" || effectiveOutcome === "blocked";
+  const evidenceSummary = evidenceText([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])]).join("; ") || report.summary;
   const review: GoalReview | undefined = shouldRecordReview ? {
     timestamp: nowIso(),
     verdict: reviewVerdict,
-    findings: report.review?.findings?.length ? report.review.findings : [report.completionAssessment?.reason ?? report.summary],
-    unresolvedGaps: reviewVerdict === "ready_to_complete" ? undefined : unresolvedGaps,
-    evidenceSummary: report.review?.evidenceSummary ?? (report.evidence?.length ? report.evidence.join("; ") : report.summary),
+    findings: [report.summary],
+    unresolvedGaps: reviewVerdict === "ready_to_complete" ? undefined : [report.blocker?.reason ?? report.nextAction ?? "Continue delegated goal execution."],
+    evidenceSummary,
   } : undefined;
 
   validateReview(review ?? { verdict: "not_ready", findings: ["Delegated progress recorded."], unresolvedGaps: ["Continue."], evidenceSummary: "Delegated progress recorded." });
 
   const noteParts = [
     `Delegated outcome: ${report.outcome}${effectiveOutcome !== report.outcome ? ` (treated as ${effectiveOutcome})` : ""}. ${report.summary}`,
-    report.actionsTaken?.length ? `Actions: ${report.actionsTaken.join("; ")}` : undefined,
-    report.waitCondition ? `Wait condition: ${report.waitCondition}` : undefined,
-    report.resumeTrigger ? `Resume trigger: ${report.resumeTrigger}` : undefined,
+    report.actions?.length ? `Actions: ${report.actions.map((item) => item.summary).join("; ")}` : undefined,
+    report.wait?.condition ? `Wait condition: ${report.wait.condition}` : undefined,
+    report.wait?.resumeTrigger ? `Resume trigger: ${report.wait.resumeTrigger}` : undefined,
   ].filter(Boolean);
 
   return {
@@ -587,18 +580,18 @@ function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport, sca
     status: effectiveOutcome === "blocked" ? "blocked" : goal.status,
     stopReason: effectiveOutcome === "blocked" ? "blocked" : goal.stopReason,
     summary: report.summary,
-    checklist: report.checklist ?? goal.checklist,
+    checklist: report.proposedState?.checklist ?? goal.checklist,
     criteria,
     reviews: review ? [...(goal.reviews ?? []), review].slice(-20) : goal.reviews,
     lastReviewStep: review ? goal.stepCount : goal.lastReviewStep,
-    facts: appendUniqueStrings(goal.facts, report.facts),
-    assumptions: appendUniqueStrings(goal.assumptions, report.assumptions),
-    risks: appendUniqueStrings(goal.risks, report.risks),
-    blockers: effectiveOutcome === "blocked" ? appendUniqueStrings(goal.blockers, asStringArray(report.blockers) ?? [report.summary]) : appendUniqueStrings(goal.blockers, report.blockers),
-    evidence: appendUniqueStrings(goal.evidence, report.evidence),
-    nextAction: effectiveOutcome === "ready_to_complete"
+    facts: appendUniqueStrings(goal.facts, report.proposedState?.factsToAdd),
+    assumptions: appendUniqueStrings(goal.assumptions, report.proposedState?.assumptionsToAdd),
+    risks: appendUniqueStrings(goal.risks, report.proposedState?.risksToAdd),
+    blockers: effectiveOutcome === "blocked" ? appendUniqueStrings(goal.blockers, [report.blocker?.reason ?? report.summary]) : appendUniqueStrings(goal.blockers, report.proposedState?.blockersToAdd),
+    evidence: appendUniqueStrings(goal.evidence, evidenceText([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])])),
+    nextAction: effectiveOutcome === "ready_for_review"
       ? "Parent should verify readiness and complete the goal if evidence is sufficient."
-      : report.nextAction ?? report.resumeTrigger ?? report.waitCondition ?? goal.nextAction,
+      : report.nextAction ?? report.wait?.resumeTrigger ?? report.wait?.condition ?? report.blocker?.needed ?? goal.nextAction,
     notes: [...goal.notes, { timestamp: nowIso(), text: noteParts.join(" ") }].slice(-50),
     continuationQueued: false,
   };
@@ -611,14 +604,14 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   const report = workerRun.report;
   const afterReport = applyDelegatedReport(goal, report, scaffold);
   const nextStep = goal.stepCount + 1;
-  const readiness = report.outcome === "ready_to_complete" ? completionReadiness(afterReport) : { ready: false, missing: [] as string[] };
+  const readiness = report.outcome === "ready_for_review" ? completionReadiness(afterReport) : { ready: false, missing: [] as string[] };
 
-  let parentReview: ParentReviewReport | undefined;
+  let parentReview: GoalAgentReport | undefined;
   let parentReviewSessionFile: string | undefined;
   let reviewedReport = afterReport;
   let completed = false;
 
-  if (report.outcome === "ready_to_complete" && readiness.ready) {
+  if (report.outcome === "ready_for_review" && readiness.ready) {
     if (ctx.hasUI) ctx.ui.notify("Delegated worker proposed completion; running parent verification...", "info");
     const parentReviewRun = await runParentReview(afterReport, report, ctx);
     parentReview = parentReviewRun.report;
@@ -626,9 +619,9 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     const parentReviewEntry: GoalReview = {
       timestamp: nowIso(),
       verdict: parentReview.verdict,
-      findings: parentReview.findings,
-      unresolvedGaps: parentReview.verdict === "not_ready" ? parentReview.unresolvedGaps : undefined,
-      evidenceSummary: parentReview.evidenceSummary,
+      findings: parentReview.findings ?? [parentReview.summary],
+      unresolvedGaps: parentReview.verdict === "ready_to_complete" ? undefined : parentReview.unresolvedGaps ?? [parentReview.summary],
+      evidenceSummary: evidenceText(parentReview.evidence).join("; ") || parentReview.summary,
     };
     completed = parentReview.verdict === "ready_to_complete";
     reviewedReport = {
@@ -639,7 +632,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
         ? "Goal verified complete by parent review."
         : parentReview.unresolvedGaps?.[0] ?? "Address parent verification gaps.",
     };
-  } else if (report.outcome === "ready_to_complete") {
+  } else if (report.outcome === "ready_for_review") {
     reviewedReport = {
       ...afterReport,
       reviews: [...(afterReport.reviews ?? []), {
@@ -647,7 +640,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
         verdict: "not_ready" as const,
         findings: ["Programmatic readiness check rejected delegated completion before parent verification."],
         unresolvedGaps: readiness.missing,
-        evidenceSummary: `Delegated worker proposed completion, but readiness gaps remain: ${readiness.missing.join("; ")}`,
+        evidenceSummary: `Delegated worker proposed review, but readiness gaps remain: ${readiness.missing.join("; ")}`,
       }].slice(-20),
       nextAction: `Address readiness gaps before parent verification: ${readiness.missing.join("; ")}`,
     };
@@ -657,7 +650,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   const iterationTimestamp = nowIso();
   const sessionRefs: GoalSubagentSessionRef[] = [
     { role: "worker", timestamp: iterationTimestamp, sessionFile: workerRun.sessionFile },
-    ...(parentReview || parentReviewSessionFile ? [{ role: "parent-reviewer" as const, timestamp: iterationTimestamp, sessionFile: parentReviewSessionFile }] : []),
+    ...(parentReview || parentReviewSessionFile ? [{ role: "reviewer" as const, timestamp: iterationTimestamp, sessionFile: parentReviewSessionFile }] : []),
   ];
   const withIteration = appendGoalIteration(reviewedReport, {
     step: nextStep,
@@ -665,7 +658,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     roles: sessionRefs.map((ref) => ref.role),
     outcome: report.outcome,
     summary: report.summary,
-    evidence: report.evidence ?? [],
+    evidence: evidenceText(report.evidence),
     nextAction: reviewedReport.nextAction,
     sessionRefs,
   });
@@ -680,9 +673,9 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
 
   const message = completed
     ? `Goal completed after parent verification.\n\n${parentReview?.commentary ?? report.summary}`
-    : report.outcome === "ready_to_complete"
+    : report.outcome === "ready_for_review"
       ? parentReview
-        ? `Delegated worker proposed completion, but parent verification says not ready.\n\n${parentReview.commentary}\n\nGaps:\n${(parentReview.unresolvedGaps ?? []).map((item) => `- ${item}`).join("\n")}`
+        ? `Delegated worker proposed completion, but parent verification says not ready.\n\n${parentReview.commentary ?? parentReview.summary}\n\nGaps:\n${(parentReview.unresolvedGaps ?? []).map((item) => `- ${item}`).join("\n")}`
         : `Delegated worker thinks goal may be complete, but readiness check found gaps:\n${readiness.missing.map((item) => `- ${item}`).join("\n")}`
       : `Delegated goal step ${nextStep}: ${report.outcome}\n${report.summary}`;
   pi.sendMessage({ customType: "goal-delegated-step", content: message, display: true, details: { report, parentReview, goal: goalForModel(updated), path: goalPath(updated.id) } });

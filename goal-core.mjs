@@ -138,3 +138,102 @@ export function completionReadiness(goal) {
   if (normalized.status === "blocked") missing.push("goal is blocked");
   return { ready: missing.length === 0, missing };
 }
+
+const REPORT_ROLES = ["worker", "reviewer", "observer", "researcher", "experimenter"];
+const REPORT_OUTCOMES = ["progress", "no_progress", "waiting", "blocked", "ready_for_review", "review_complete"];
+const REPORT_CONFIDENCE = ["low", "medium", "high"];
+const EVIDENCE_KINDS = ["command", "file", "test", "url", "session", "observation", "artifact"];
+const EVIDENCE_STATUSES = ["passed", "failed", "observed", "created", "modified", "not_run"];
+const CRITERION_OPERATIONS = ["add", "update_status"];
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validateEvidenceRef(item, path) {
+  if (!item || typeof item !== "object") throw new Error(`${path} must be an object.`);
+  if (!EVIDENCE_KINDS.includes(item.kind)) throw new Error(`${path}.kind is invalid.`);
+  if (!isNonEmptyString(item.ref)) throw new Error(`${path}.ref is required.`);
+  if (!isNonEmptyString(item.summary)) throw new Error(`${path}.summary is required.`);
+  if (item.status !== undefined && !EVIDENCE_STATUSES.includes(item.status)) throw new Error(`${path}.status is invalid.`);
+}
+
+function validateStringArray(value, path, required = false) {
+  if (value === undefined) {
+    if (required) throw new Error(`${path} is required.`);
+    return;
+  }
+  if (!Array.isArray(value) || value.some((item) => !isNonEmptyString(item))) throw new Error(`${path} must be an array of non-empty strings.`);
+}
+
+export function validateGoalAgentReport(report) {
+  if (!report || typeof report !== "object") throw new Error("Report must be an object.");
+  if (report.schemaVersion !== 1) throw new Error("Report schemaVersion must be 1.");
+  if (!REPORT_ROLES.includes(report.role)) throw new Error(`Invalid report role: ${report.role}`);
+  if (!REPORT_OUTCOMES.includes(report.outcome)) throw new Error(`Invalid report outcome: ${report.outcome}`);
+  if (!isNonEmptyString(report.summary)) throw new Error("Report summary is required.");
+  if (!REPORT_CONFIDENCE.includes(report.confidence)) throw new Error("Report confidence must be low, medium, or high.");
+  if (!Array.isArray(report.evidence)) throw new Error("Report evidence must be an array.");
+  report.evidence.forEach((item, index) => validateEvidenceRef(item, `evidence[${index}]`));
+  if (!Array.isArray(report.actions)) throw new Error("Report actions must be an array.");
+  report.actions.forEach((item, index) => {
+    if (!item || typeof item !== "object" || !isNonEmptyString(item.summary)) throw new Error(`actions[${index}].summary is required.`);
+    if (item.evidence !== undefined) {
+      if (!Array.isArray(item.evidence)) throw new Error(`actions[${index}].evidence must be an array.`);
+      item.evidence.forEach((evidence, evidenceIndex) => validateEvidenceRef(evidence, `actions[${index}].evidence[${evidenceIndex}]`));
+    }
+  });
+  if (!["blocked", "waiting", "ready_for_review", "review_complete"].includes(report.outcome) && !isNonEmptyString(report.nextAction)) {
+    throw new Error("Report nextAction is required unless blocked, waiting, ready_for_review, or review_complete.");
+  }
+  const proposed = report.proposedState ?? {};
+  if (proposed && typeof proposed !== "object") throw new Error("proposedState must be an object.");
+  for (const field of ["factsToAdd", "assumptionsToAdd", "risksToAdd", "blockersToAdd"]) validateStringArray(proposed[field], `proposedState.${field}`);
+  if (proposed.evidenceToAdd !== undefined) {
+    if (!Array.isArray(proposed.evidenceToAdd)) throw new Error("proposedState.evidenceToAdd must be an array.");
+    proposed.evidenceToAdd.forEach((item, index) => validateEvidenceRef(item, `proposedState.evidenceToAdd[${index}]`));
+  }
+  if (report.criteriaUpdates !== undefined) {
+    if (!Array.isArray(report.criteriaUpdates)) throw new Error("criteriaUpdates must be an array.");
+    report.criteriaUpdates.forEach((item, index) => {
+      if (!item || typeof item !== "object") throw new Error(`criteriaUpdates[${index}] must be an object.`);
+      if (!CRITERION_OPERATIONS.includes(item.operation)) throw new Error(`criteriaUpdates[${index}].operation is invalid.`);
+      if (item.operation === "add" && !isNonEmptyString(item.text)) throw new Error(`criteriaUpdates[${index}].text is required for add.`);
+      if (item.operation === "update_status" && !isNonEmptyString(item.id)) throw new Error(`criteriaUpdates[${index}].id is required for update_status.`);
+      if (item.status !== undefined && !["pending", "passed", "failed"].includes(item.status)) throw new Error(`criteriaUpdates[${index}].status is invalid.`);
+      if (item.status === "passed" && (!Array.isArray(item.evidence) || item.evidence.length === 0)) throw new Error(`criteriaUpdates[${index}] passed status requires evidence.`);
+      if (item.evidence !== undefined) {
+        if (!Array.isArray(item.evidence)) throw new Error(`criteriaUpdates[${index}].evidence must be an array.`);
+        item.evidence.forEach((evidence, evidenceIndex) => validateEvidenceRef(evidence, `criteriaUpdates[${index}].evidence[${evidenceIndex}]`));
+      }
+    });
+  }
+  if (report.outcome === "blocked") {
+    if (!isNonEmptyString(report.blocker?.reason)) throw new Error("Blocked reports require blocker.reason.");
+    if (!isNonEmptyString(report.blocker?.needed)) throw new Error("Blocked reports require blocker.needed.");
+    if (!Array.isArray(report.blocker?.evidence) || report.blocker.evidence.length === 0) throw new Error("Blocked reports require blocker.evidence.");
+    report.blocker.evidence.forEach((item, index) => validateEvidenceRef(item, `blocker.evidence[${index}]`));
+  }
+  if (report.outcome === "waiting") {
+    if (!isNonEmptyString(report.wait?.condition)) throw new Error("Waiting reports require wait.condition.");
+    if (!isNonEmptyString(report.wait?.resumeTrigger)) throw new Error("Waiting reports require wait.resumeTrigger.");
+  }
+  if (report.role === "reviewer") {
+    if (!["ready_to_complete", "not_ready", "blocked"].includes(report.verdict)) throw new Error("Reviewer report verdict is invalid.");
+    if (!Array.isArray(report.findings) || report.findings.length === 0 || report.findings.some((item) => !isNonEmptyString(item))) throw new Error("Reviewer report findings must be a non-empty array of strings.");
+    if (report.verdict !== "ready_to_complete" && (!Array.isArray(report.unresolvedGaps) || report.unresolvedGaps.length === 0)) throw new Error("Non-ready reviewer reports require unresolvedGaps.");
+    if (report.verdict === "ready_to_complete" && report.unresolvedGaps?.length) throw new Error("Ready reviewer reports must not include unresolvedGaps.");
+    if (!Array.isArray(report.criteriaAssessment)) throw new Error("Reviewer report criteriaAssessment must be an array.");
+  }
+  return report;
+}
+
+export function formatEvidenceRef(evidence) {
+  if (!evidence || typeof evidence !== "object") return "";
+  const status = evidence.status ? `${evidence.status}: ` : "";
+  return `${evidence.kind}:${evidence.ref} — ${status}${evidence.summary}`;
+}
+
+export function formatEvidenceRefs(items = []) {
+  return (Array.isArray(items) ? items : []).map(formatEvidenceRef).filter(Boolean);
+}

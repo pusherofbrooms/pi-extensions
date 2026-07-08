@@ -9,6 +9,7 @@ import {
   normalizeCriteriaInputs,
   normalizeGoal,
   recommendScaffoldId,
+  validateGoalAgentReport,
   validateReview,
   waitingStatusFromReport,
 } from "../goal-core.mjs";
@@ -91,4 +92,62 @@ test("completionReadiness requires criteria evidence and ready terminal review",
   assert.equal(completionReadiness(base).ready, false);
   assert.equal(completionReadiness({ ...base, reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof" }] }).ready, true);
   assert.equal(completionReadiness({ ...base, status: "blocked", reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof" }] }).ready, false);
+});
+
+test("validateGoalAgentReport accepts structured worker reports", () => {
+  assert.doesNotThrow(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "worker",
+    outcome: "progress",
+    summary: "Implemented a shared report schema.",
+    confidence: "medium",
+    actions: [{ summary: "Updated schema validators." }],
+    evidence: [{ kind: "file", ref: "goal-core.mjs", status: "modified", summary: "Added report validation." }],
+    proposedState: {
+      factsToAdd: ["Reports use schemaVersion 1."],
+      evidenceToAdd: [{ kind: "test", ref: "node --test tests/*.test.mjs", status: "passed", summary: "Tests passed." }],
+    },
+    criteriaUpdates: [{ operation: "add", text: "Reports validate successfully.", status: "pending" }],
+    nextAction: "Adapt goal worker prompt.",
+  }));
+});
+
+test("validateGoalAgentReport rejects weak completion and blocker claims", () => {
+  assert.throws(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "worker",
+    outcome: "progress",
+    summary: "Done",
+    confidence: "high",
+    actions: [],
+    evidence: [],
+    criteriaUpdates: [{ operation: "update_status", id: "CRIT-001", status: "passed" }],
+    nextAction: "Complete.",
+  }), /passed status requires evidence/);
+
+  assert.throws(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "worker",
+    outcome: "blocked",
+    summary: "Blocked",
+    confidence: "medium",
+    actions: [],
+    evidence: [],
+  }), /blocker.reason/);
+});
+
+test("validateGoalAgentReport enforces reviewer readiness shape", () => {
+  assert.throws(() => validateGoalAgentReport({
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Ready despite gaps",
+    confidence: "medium",
+    actions: [],
+    evidence: [{ kind: "observation", ref: "goal state", summary: "Reviewed." }],
+    verdict: "ready_to_complete",
+    findings: ["Looks ready."],
+    unresolvedGaps: ["Still missing tests."],
+    criteriaAssessment: [],
+  }), /must not include unresolvedGaps/);
 });

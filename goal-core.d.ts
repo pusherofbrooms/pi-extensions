@@ -9,3 +9,6 @@ export function recommendScaffoldId(objective?: string): string;
 export function applyCriterionUpdates(criteria: unknown[], updates: unknown[]): unknown[];
 export function validateReview(review: unknown): void;
 export function completionReadiness(goal: unknown): { ready: boolean; missing: string[] };
+export function validateGoalAgentReport(report: unknown): unknown;
+export function formatEvidenceRef(evidence: unknown): string;
+export function formatEvidenceRefs(items?: unknown[]): string[];
