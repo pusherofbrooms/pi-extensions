@@ -9,6 +9,7 @@ export function normalizeGoal(goal) {
     risks: Array.isArray(goal.risks) ? goal.risks : [],
     blockers: Array.isArray(goal.blockers) ? goal.blockers : [],
     evidence: Array.isArray(goal.evidence) ? goal.evidence : [],
+    iterations: Array.isArray(goal.iterations) ? goal.iterations : [],
   };
 }
 

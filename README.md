@@ -71,11 +71,12 @@ Output is truncated to Pi defaults (about 50KB / 2000 lines), with full text sav
 ## 3) `subagents`
 Adds a subagent tool and command helpers:
 
-- **`subagent`**: runs named agents in isolated in-memory sessions (single, parallel, chain).
+- **`subagent`**: runs named agents in isolated persisted Pi sessions (single, parallel, chain).
 - **`/agents`**: lists discovered agents and their source.
 - **`/agent <name> <task>`**: run any discovered agent by name.
 - Dynamic aliases like **`/scout ...`** or **`/worker ...`** are auto-registered when command names do not conflict.
 - Command-based runs (`/agent ...` and aliases) emit start/finish notifications in the chat area so long-running work is visible.
+- Each subagent result includes the persisted Pi `sessionFile` path in tool/message details for later audit or self-improvement.
 
 ### Agent files
 Discovery order (by name override):
@@ -123,9 +124,9 @@ Commands:
 - `/goal scaffold <id>` selects a scaffold for the current goal.
 - `/goal scaffold status` shows the current scaffold.
 
-The extension stores durable goal state under `~/.pi/agent/goals/` with a single index file mapping projects to current goals. It exposes `get_goal`, `goal_note`, `goal_criteria`, `goal_criterion_update`, `goal_review`, `goal_block`, and `update_goal` tools. Autonomous continuations run through a bundled `goal-worker` sub-agent in a fresh in-memory session so bulky execution context stays out of the parent chat. The parent extension records each worker report, owns lifecycle state, and queues follow-up worker turns until the goal is complete, paused, blocked, cleared, or max iterations are reached.
+The extension stores durable goal state under `~/.pi/agent/goals/` with a single index file mapping projects to current goals. It exposes `get_goal`, `goal_note`, `goal_criteria`, `goal_criterion_update`, `goal_review`, `goal_block`, and `update_goal` tools. Autonomous continuations run through a bundled `goal-worker` sub-agent in a fresh persisted Pi session so bulky execution context stays out of the parent chat while the raw subagent session remains auditable. The parent extension records each worker report, owns lifecycle state, and queues follow-up worker turns until the goal is complete, paused, blocked, cleared, or max iterations are reached.
 
-For long-horizon goals, the model or delegated worker can define/update evidence-bearing success criteria, record structured facts/assumptions/risks/blockers/evidence, and perform terminal reviews. `update_goal` refuses model-driven completion until criteria are passed with evidence and the latest review says `ready_to_complete`; delegated workers can only propose readiness. When a worker proposes completion, the parent first runs readiness checks, then performs a concise parent-review pass before marking the goal complete and posting brief completion commentary.
+For long-horizon goals, the model or delegated worker can define/update evidence-bearing success criteria, record structured facts/assumptions/risks/blockers/evidence, and perform terminal reviews. Goal JSON also keeps a bounded `iterations` list with each delegated step's outcome, compact evidence, next action, roles, and references to the persisted Pi session files for worker/parent-reviewer runs. `update_goal` refuses model-driven completion until criteria are passed with evidence and the latest review says `ready_to_complete`; delegated workers can only propose readiness. When a worker proposes completion, the parent first runs readiness checks, then performs a concise parent-review pass before marking the goal complete and posting brief completion commentary.
 
 The default continuation policy is intentionally generic: make one coherent unit of progress, update durable state, and stop. A coherent unit can be a focused change, bounded investigation, review, or an operating cycle that checks several live concerns and advances one primary concern.
 

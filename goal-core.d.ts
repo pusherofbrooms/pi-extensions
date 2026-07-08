@@ -1,4 +1,4 @@
-export function normalizeGoal<T extends Record<string, unknown>>(goal: T): T;
+export function normalizeGoal<T extends Record<string, unknown>>(goal: T): T & { iterations: unknown[] };
 export function nextCriterionId(existing?: Array<{ id: string }>): string;
 export function normalizeCriteriaInputs(inputs: unknown[], existing?: Array<{ id: string }>): unknown[];
 export function appendUniqueStrings(existing?: unknown[], incoming?: unknown[], maxItems?: number): string[];

@@ -1,14 +1,10 @@
-import type { Message } from "@mariozechner/pi-ai";
 import {
-  createAgentSession,
-  DefaultResourceLoader,
-  getAgentDir,
-  SessionManager,
   type ExtensionAPI,
   type ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
+import { runAgentSession } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
 import { appendUniqueStrings, applyCriterionUpdates, blockedStatusFromReport, completionReadiness, mergeCriteria, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, validateReview, waitingStatusFromReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
@@ -61,6 +57,23 @@ type GoalNoteEntry = {
   text: string;
 };
 
+type GoalSubagentSessionRef = {
+  role: "worker" | "parent-reviewer";
+  timestamp: string;
+  sessionFile?: string;
+};
+
+type GoalIteration = {
+  step: number;
+  timestamp: string;
+  roles: Array<GoalSubagentSessionRef["role"]>;
+  outcome: DelegatedGoalReport["outcome"];
+  summary: string;
+  evidence: string[];
+  nextAction: string;
+  sessionRefs: GoalSubagentSessionRef[];
+};
+
 type StoredGoal = {
   version: 1;
   id: string;
@@ -83,6 +96,7 @@ type StoredGoal = {
   risks?: string[];
   blockers?: string[];
   evidence?: string[];
+  iterations?: GoalIteration[];
   reviewEvery?: number;
   lastReviewStep?: number;
   nextAction: string;
@@ -363,6 +377,10 @@ function goalForModel(goal: StoredGoal): StoredGoal {
   return safeGoal;
 }
 
+function appendGoalIteration(goal: StoredGoal, iteration: GoalIteration): StoredGoal {
+  return { ...goal, iterations: [...(goal.iterations ?? []), iteration].slice(-50) };
+}
+
 function renderGoalForModel(goal: StoredGoal): string {
   const criteria = goal.criteria?.length
     ? goal.criteria.map((item) => `- [${item.status === "passed" ? "x" : item.status === "failed" ? "!" : " "}] ${item.id}: ${item.text}${item.evidence ? ` — ${item.evidence}` : ""}`).join("\n")
@@ -395,17 +413,6 @@ function updateStatus(ctx: ExtensionContext, goal?: StoredGoal): void {
   }
   const cap = goal.maxIterations ? `/${goal.maxIterations}` : "";
   ctx.ui.setStatus("goal", `goal: ${goal.status} ${goal.stepCount}${cap}`);
-}
-
-function getFinalAssistantText(messages: Message[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message.role !== "assistant") continue;
-    for (const part of message.content) {
-      if (part.type === "text") return part.text;
-    }
-  }
-  return "";
 }
 
 function extractJsonObject(text: string): string {
@@ -498,71 +505,45 @@ async function runIsolatedAgent(
   systemPromptPath: string,
   prompt: string,
   tools: string[],
-): Promise<string> {
-  const agentDir = getAgentDir();
-  const systemPrompt = await loadAgentSystemPrompt(systemPromptPath);
-  const loader = new DefaultResourceLoader({
+): Promise<{ text: string; sessionFile?: string }> {
+  const result = await runAgentSession({
     cwd: goal.cwd,
-    agentDir,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    systemPromptOverride: () => systemPrompt,
-    appendSystemPromptOverride: () => [],
-  });
-  await loader.reload();
-
-  const messages: Message[] = [];
-  const { session } = await createAgentSession({
-    cwd: goal.cwd,
-    agentDir,
-    resourceLoader: loader,
-    sessionManager: SessionManager.inMemory(goal.cwd),
-    model: ctx.model,
+    systemPrompt: await loadAgentSystemPrompt(systemPromptPath),
+    prompt,
     tools,
+    model: ctx.model,
   });
-
-  const unsubscribe = session.subscribe((event) => {
-    if (event.type === "message_end") messages.push(event.message);
-  });
-
-  try {
-    await session.prompt(prompt, { source: "extension" });
-    return getFinalAssistantText(messages);
-  } finally {
-    unsubscribe();
-    session.dispose();
-  }
+  if (result.exitCode !== 0) throw new Error(result.stderr ?? result.errorMessage ?? "Goal subagent failed.");
+  return { text: result.finalText, sessionFile: result.sessionFile };
 }
 
-async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext): Promise<DelegatedGoalReport> {
-  const text = await runIsolatedAgent(
+async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext): Promise<{ report: DelegatedGoalReport; sessionFile?: string }> {
+  const result = await runIsolatedAgent(
     goal,
     ctx,
     GOAL_WORKER_AGENT_PATH,
     delegatedPrompt(goal, scaffold),
     ["read", "grep", "find", "ls", "bash", "edit", "write"],
   );
-  return parseDelegatedReport(text);
+  return { report: parseDelegatedReport(result.text), sessionFile: result.sessionFile };
 }
 
 function parentReviewPrompt(goal: StoredGoal, workerReport: DelegatedGoalReport): string {
   return `A delegated goal worker believes this autonomous goal is ready to complete. Perform a concise parent-side verification pass.\n\nOriginal objective:\n<objective>\n${goal.objective}\n</objective>\n\nCurrent durable goal state after worker report:\n${renderGoalForModel(goal)}\n\nWorker report:\n${JSON.stringify(workerReport, null, 2)}\n\nVerification contract:\n- Compare the objective, criteria, evidence, checklist, and worker report.\n- Inspect files or run lightweight commands only if needed to verify concrete claims.\n- Do not modify files.\n- Return not_ready if required evidence is missing, criteria are not actually satisfied, or verification is uncertain.\n- Return ready_to_complete only if the goal is genuinely done.\n- Include brief parent-agent commentary suitable to show the user when the goal completes or needs more work.\n\nReturn only valid JSON with this shape. Allowed verdict values: ready_to_complete, not_ready.\n{\n  "verdict": "ready_to_complete",\n  "commentary": "brief user-facing parent commentary",\n  "findings": ["..."],\n  "unresolvedGaps": ["required when not_ready"],\n  "evidenceSummary": "concrete verification evidence"\n}\n\nOmit unresolvedGaps when ready_to_complete. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
-async function runParentReview(goal: StoredGoal, workerReport: DelegatedGoalReport, ctx: ExtensionContext): Promise<ParentReviewReport> {
-  const text = await runIsolatedAgent(
+async function runParentReview(goal: StoredGoal, workerReport: DelegatedGoalReport, ctx: ExtensionContext): Promise<{ report: ParentReviewReport; sessionFile?: string }> {
+  const result = await runIsolatedAgent(
     goal,
     ctx,
     GOAL_PARENT_REVIEWER_AGENT_PATH,
     parentReviewPrompt(goal, workerReport),
     ["read", "grep", "find", "ls", "bash"],
   );
-  const report = parseParentReviewReport(text);
+  const report = parseParentReviewReport(result.text);
   const secretError = checkParentReviewForSecrets(report);
   if (secretError) throw new Error(`Refusing to store parent review report: ${secretError}.`);
-  return report;
+  return { report, sessionFile: result.sessionFile };
 }
 
 function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport, scaffold: GoalScaffold): StoredGoal {
@@ -626,18 +607,22 @@ function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport, sca
 async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal): Promise<void> {
   if (ctx.hasUI) ctx.ui.notify(`Running delegated goal step ${goal.stepCount + 1}...`, "info");
   const scaffold = await loadScaffold(ctx.cwd, goal.scaffold ?? "default");
-  const report = await runGoalWorker(goal, scaffold, ctx);
+  const workerRun = await runGoalWorker(goal, scaffold, ctx);
+  const report = workerRun.report;
   const afterReport = applyDelegatedReport(goal, report, scaffold);
   const nextStep = goal.stepCount + 1;
   const readiness = report.outcome === "ready_to_complete" ? completionReadiness(afterReport) : { ready: false, missing: [] as string[] };
 
   let parentReview: ParentReviewReport | undefined;
+  let parentReviewSessionFile: string | undefined;
   let reviewedReport = afterReport;
   let completed = false;
 
   if (report.outcome === "ready_to_complete" && readiness.ready) {
     if (ctx.hasUI) ctx.ui.notify("Delegated worker proposed completion; running parent verification...", "info");
-    parentReview = await runParentReview(afterReport, report, ctx);
+    const parentReviewRun = await runParentReview(afterReport, report, ctx);
+    parentReview = parentReviewRun.report;
+    parentReviewSessionFile = parentReviewRun.sessionFile;
     const parentReviewEntry: GoalReview = {
       timestamp: nowIso(),
       verdict: parentReview.verdict,
@@ -669,8 +654,23 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   }
 
   const reachedCap = reviewedReport.maxIterations !== undefined && nextStep >= reviewedReport.maxIterations;
+  const iterationTimestamp = nowIso();
+  const sessionRefs: GoalSubagentSessionRef[] = [
+    { role: "worker", timestamp: iterationTimestamp, sessionFile: workerRun.sessionFile },
+    ...(parentReview || parentReviewSessionFile ? [{ role: "parent-reviewer" as const, timestamp: iterationTimestamp, sessionFile: parentReviewSessionFile }] : []),
+  ];
+  const withIteration = appendGoalIteration(reviewedReport, {
+    step: nextStep,
+    timestamp: iterationTimestamp,
+    roles: sessionRefs.map((ref) => ref.role),
+    outcome: report.outcome,
+    summary: report.summary,
+    evidence: report.evidence ?? [],
+    nextAction: reviewedReport.nextAction,
+    sessionRefs,
+  });
   const updated = await writeGoal({
-    ...reviewedReport,
+    ...withIteration,
     status: completed ? "complete" : reachedCap && reviewedReport.status === "active" ? "paused" : reviewedReport.status,
     stopReason: completed ? reviewedReport.stopReason : reachedCap && reviewedReport.status === "active" ? "maxIterationsReached" : reviewedReport.stopReason,
     stepCount: nextStep,
@@ -919,6 +919,7 @@ export default function goalExtension(pi: ExtensionAPI) {
         risks: [],
         blockers: [],
         evidence: [],
+        iterations: [],
         nextAction: "Inspect the goal and choose the first concrete action.",
         notes: [{ timestamp: nowIso(), text: "Goal created. Do not store secrets in goal notes." }],
         continuationQueued: false,
@@ -1056,6 +1057,7 @@ export default function goalExtension(pi: ExtensionAPI) {
         risks: [],
         blockers: [],
         evidence: [],
+        iterations: [],
         nextAction: "Inspect the goal and choose the first concrete action.",
         notes: [{ timestamp: nowIso(), text: "Goal created via goal_start tool. Do not store secrets in goal notes." }],
         continuationQueued: false,

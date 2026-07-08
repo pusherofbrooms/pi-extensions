@@ -4,13 +4,11 @@ import { fileURLToPath } from "node:url";
 import type { Message, Model } from "@mariozechner/pi-ai";
 import { StringEnum } from "@mariozechner/pi-ai";
 import {
-	createAgentSession,
-	DefaultResourceLoader,
 	getAgentDir,
 	parseFrontmatter,
-	SessionManager,
 	type ExtensionAPI,
 } from "@mariozechner/pi-coding-agent";
+import { defaultAgentRunUsage, runAgentSession } from "./agent-runner.ts";
 import { Type } from "typebox";
 
 type AgentScope = "user" | "project" | "both";
@@ -43,6 +41,7 @@ interface SingleResult {
 	exitCode: number;
 	stderr?: string;
 	usage: UsageStats;
+	sessionFile?: string;
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
@@ -68,15 +67,7 @@ const MODULE_DIR = typeof __dirname === "string" ? __dirname : path.dirname(file
 const DEFAULT_AGENTS_DIR = path.join(MODULE_DIR, "agents");
 
 function defaultUsage(): UsageStats {
-	return {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		cost: 0,
-		contextTokens: 0,
-		turns: 0,
-	};
+	return defaultAgentRunUsage();
 }
 
 function isDirectory(p: string): boolean {
@@ -247,11 +238,12 @@ async function runSingleAgent(
 	}
 
 	const cwd = runCwd ? path.resolve(defaultCwd, runCwd) : defaultCwd;
-	const agentDir = getAgentDir();
 	const inheritedModel = ctx.model;
 	const inheritedProvider = inheritedModel?.provider;
 	const inheritedId = inheritedModel?.id;
 	const inheritedModelLabel = inheritedProvider && inheritedId ? `${inheritedProvider}/${inheritedId}` : undefined;
+	const resolvedModel = resolveModel(agent.model, ctx) ?? inheritedModel;
+	const tools = getToolNames(agent.tools);
 	const current: SingleResult = {
 		agent: agentName,
 		agentSource: agent.source,
@@ -271,76 +263,34 @@ async function runSingleAgent(
 		});
 	};
 
-	const loader = new DefaultResourceLoader({
+	const result = await runAgentSession({
 		cwd,
-		agentDir,
-		noExtensions: true,
-		noSkills: true,
-		noPromptTemplates: true,
-		noThemes: true,
-		systemPromptOverride: () => agent.systemPrompt,
-		appendSystemPromptOverride: () => [],
-	});
-	await loader.reload();
-
-	const resolvedModel = resolveModel(agent.model, ctx) ?? inheritedModel;
-	const tools = getToolNames(agent.tools);
-	const { session } = await createAgentSession({
-		cwd,
-		agentDir,
-		resourceLoader: loader,
-		sessionManager: SessionManager.inMemory(cwd),
-		model: resolvedModel,
+		systemPrompt: agent.systemPrompt,
+		prompt: task,
 		tools,
-	});
-
-	const unsubscribe = session.subscribe((event) => {
-		if (event.type === "message_end") {
-			current.messages.push(event.message);
-			if (event.message.role === "assistant") {
-				current.usage.turns += 1;
-				const usage = event.message.usage;
-				if (usage) {
-					current.usage.input += usage.input || 0;
-					current.usage.output += usage.output || 0;
-					current.usage.cacheRead += usage.cacheRead || 0;
-					current.usage.cacheWrite += usage.cacheWrite || 0;
-					current.usage.cost += usage.cost?.total || 0;
-					current.usage.contextTokens = usage.totalTokens || 0;
-				}
-				if (!current.model && event.message.model) current.model = event.message.model;
-				if (event.message.stopReason) current.stopReason = event.message.stopReason;
-				if (event.message.errorMessage) current.errorMessage = event.message.errorMessage;
-			}
+		model: resolvedModel,
+		signal,
+		onMessageEnd: (partial) => {
+			current.messages = partial.messages;
+			current.exitCode = partial.exitCode;
+			current.stderr = partial.stderr;
+			current.usage = partial.usage;
+			current.sessionFile = partial.sessionFile;
+			current.model = partial.model ?? current.model;
+			current.stopReason = partial.stopReason;
+			current.errorMessage = partial.errorMessage;
 			emitUpdate();
-		}
+		},
 	});
 
-	const abortHandler = async () => {
-		try {
-			await session.abort();
-		} catch {
-			// ignore
-		}
-	};
-
-	if (signal) {
-		if (signal.aborted) await abortHandler();
-		signal.addEventListener("abort", abortHandler, { once: true });
-	}
-
-	try {
-		await session.prompt(task, { source: "extension" });
-		const error = current.stopReason === "error" || current.stopReason === "aborted";
-		if (error) current.exitCode = 1;
-	} catch (error) {
-		current.exitCode = 1;
-		current.stderr = (error as Error).message;
-	} finally {
-		unsubscribe();
-		session.dispose();
-	}
-
+	current.messages = result.messages;
+	current.exitCode = result.exitCode;
+	current.stderr = result.stderr;
+	current.usage = result.usage;
+	current.sessionFile = result.sessionFile;
+	current.model = result.model ?? current.model;
+	current.stopReason = result.stopReason;
+	current.errorMessage = result.errorMessage;
 	return current;
 }
 

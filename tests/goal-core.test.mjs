@@ -23,6 +23,7 @@ test("normalizeGoal adds new goal fields for old stored goals", () => {
   assert.deepEqual(goal.risks, []);
   assert.deepEqual(goal.blockers, []);
   assert.deepEqual(goal.evidence, []);
+  assert.deepEqual(goal.iterations, []);
 });
 
 test("normalizeCriteriaInputs allocates ids and requires passed evidence", () => {
