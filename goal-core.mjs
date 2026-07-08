@@ -87,6 +87,19 @@ export function blockedStatusFromReport(report, policy = {}) {
   return { blocked: true };
 }
 
+export function waitingStatusFromReport(report, policy = {}) {
+  if (report?.outcome !== "waiting") return { waiting: false };
+  if (policy.waitingAllowed === true) return { waiting: true };
+  return { waiting: false, reason: "Waiting outcome downgraded: scaffold policy does not allow waiting as a terminal step outcome." };
+}
+
+export function recommendScaffoldId(objective = "") {
+  const text = String(objective).toLowerCase();
+  if (/bitburner|daemon|server|session|monitor|operate|automation|running|deploy|live/.test(text)) return "operations";
+  if (/long[- ]?horizon|phase|milestone|gap|finish|complete|implement|fix|build|test/.test(text)) return "zenith";
+  return "default";
+}
+
 export function applyCriterionUpdates(criteria, updates) {
   const byId = new Map(criteria.map((criterion) => [criterion.id, criterion]));
   for (const update of updates ?? []) {

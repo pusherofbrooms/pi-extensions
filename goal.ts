@@ -10,7 +10,7 @@ import {
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
 import { detectSecret } from "./secret-detection.mjs";
-import { appendUniqueStrings, applyCriterionUpdates, blockedStatusFromReport, completionReadiness, mergeCriteria, normalizeCriteriaInputs, normalizeGoal, validateReview } from "./goal-core.mjs";
+import { appendUniqueStrings, applyCriterionUpdates, blockedStatusFromReport, completionReadiness, mergeCriteria, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, validateReview, waitingStatusFromReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -570,13 +570,19 @@ function applyDelegatedReport(goal: StoredGoal, report: DelegatedGoalReport, sca
   if (secretError) throw new Error(`Refusing to store goal worker report: ${secretError}.`);
 
   const blockDecision = blockedStatusFromReport(report, scaffold.policy);
-  const effectiveOutcome = report.outcome === "blocked" && !blockDecision.blocked ? "progress" : report.outcome;
+  const waitDecision = waitingStatusFromReport(report, scaffold.policy);
+  const effectiveOutcome = report.outcome === "blocked" && !blockDecision.blocked
+    ? "progress"
+    : report.outcome === "waiting" && !waitDecision.waiting
+      ? "progress"
+      : report.outcome;
   const criteria = mergeCriteria(goal.criteria ?? [], report.criteria ?? [], report.criterionUpdates ?? []) as GoalCriterion[];
   const reviewVerdict: GoalReviewVerdict = effectiveOutcome === "blocked" ? "blocked" : effectiveOutcome === "ready_to_complete" ? "ready_to_complete" : "not_ready";
   const shouldRecordReview = effectiveOutcome === "ready_to_complete" || report.outcome === "blocked" || !!report.review;
   const unresolvedGaps = report.review?.unresolvedGaps
     ?? report.completionAssessment?.remainingGaps
     ?? (blockDecision.reason ? [blockDecision.reason] : undefined)
+    ?? (waitDecision.reason ? [waitDecision.reason] : undefined)
     ?? (effectiveOutcome === "ready_to_complete" ? undefined : [report.nextAction ?? report.waitCondition ?? "Continue delegated goal execution."]);
   const review: GoalReview | undefined = shouldRecordReview ? {
     timestamp: nowIso(),
@@ -997,12 +1003,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     description: "Recommend an existing scaffold for a proposed objective. This does not start or modify a goal.",
     parameters: Type.Object({ objective: Type.String({ description: "Goal objective to classify." }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const text = params.objective.toLowerCase();
-      const id = /bitburner|daemon|server|session|monitor|operate|automation|running|deploy|live/.test(text)
-        ? "operations"
-        : /long[- ]?horizon|phase|milestone|gap|finish|complete|implement|fix|build|test/.test(text)
-          ? "zenith"
-          : "default";
+      const id = recommendScaffoldId(params.objective);
       const scaffold = await loadScaffold(ctx.cwd, id);
       const rationale = id === "operations"
         ? "The objective appears to involve live/external operational state or ongoing automation."
@@ -1019,15 +1020,19 @@ export default function goalExtension(pi: ExtensionAPI) {
     description: "Start a new autonomous goal after explicit user approval. Do not use proactively; first recommend the objective/scaffold and ask the user to approve.",
     parameters: Type.Object({
       objective: Type.String({ description: "Approved goal objective." }),
+      approved: Type.Boolean({ description: "Must be true after explicit user approval to start the goal." }),
       scaffold: Type.Optional(Type.String({ description: "Optional scaffold id. Defaults to recommended/default." })),
       maxIterations: Type.Optional(Type.Number({ description: "Optional positive iteration cap." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!params.approved) {
+        return { content: [{ type: "text", text: "goal_start requires explicit user approval. Ask the user to approve the objective/scaffold, then call again with approved=true." }], details: { updated: false, approvalRequired: true } };
+      }
       if (!params.objective.trim()) throw new Error("Goal objective is required.");
       if (params.objective.length > MAX_OBJECTIVE_CHARS) throw new Error(`Goal objective is too long (${params.objective.length}/${MAX_OBJECTIVE_CHARS} chars).`);
       const secretError = checkNoSecrets(params.objective, "Goal objective");
       if (secretError) throw new Error(`Refusing to store goal objective: ${secretError}.`);
-      const scaffold = await loadScaffold(ctx.cwd, params.scaffold ?? "default");
+      const scaffold = await loadScaffold(ctx.cwd, params.scaffold ?? recommendScaffoldId(params.objective));
       const maxIterations = typeof params.maxIterations === "number" && params.maxIterations > 0 ? Math.floor(params.maxIterations) : undefined;
       const goal = await writeGoal({
         version: 1,

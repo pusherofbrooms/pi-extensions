@@ -8,7 +8,9 @@ import {
   mergeCriteria,
   normalizeCriteriaInputs,
   normalizeGoal,
+  recommendScaffoldId,
   validateReview,
+  waitingStatusFromReport,
 } from "../goal-core.mjs";
 
 test("normalizeGoal adds new goal fields for old stored goals", () => {
@@ -63,6 +65,18 @@ test("mergeCriteria does not downgrade existing criteria when re-proposed withou
 test("blockedStatusFromReport downgrades unevidenced strict blocker", () => {
   assert.equal(blockedStatusFromReport({ outcome: "blocked", summary: "stuck" }, { blockedPolicy: "external-blocker-only" }).blocked, false);
   assert.equal(blockedStatusFromReport({ outcome: "blocked", blockers: ["Need user login"], evidence: ["Login prompt observed"] }, { blockedPolicy: "external-blocker-only" }).blocked, true);
+});
+
+test("waitingStatusFromReport follows scaffold policy", () => {
+  assert.equal(waitingStatusFromReport({ outcome: "waiting" }, { waitingAllowed: true }).waiting, true);
+  assert.equal(waitingStatusFromReport({ outcome: "waiting" }, { waitingAllowed: false }).waiting, false);
+  assert.equal(waitingStatusFromReport({ outcome: "progress" }, { waitingAllowed: true }).waiting, false);
+});
+
+test("recommendScaffoldId classifies common goal shapes", () => {
+  assert.equal(recommendScaffoldId("write a sad elf story to /tmp/elves.md"), "default");
+  assert.equal(recommendScaffoldId("implement and test a simon says clone"), "zenith");
+  assert.equal(recommendScaffoldId("start a bitburner session and monitor automation"), "operations");
 });
 
 test("validateReview requires findings, evidence, and gaps for non-ready verdicts", () => {
