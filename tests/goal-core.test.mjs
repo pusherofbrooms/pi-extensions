@@ -64,7 +64,10 @@ test("normalizeGoal adds new goal fields for old stored goals", () => {
   assert.deepEqual(goal.assumptions, []);
   assert.deepEqual(goal.risks, []);
   assert.deepEqual(goal.blockers, []);
+  assert.deepEqual(goal.blockerHistory, []);
+  assert.deepEqual(goal.doctrine, []);
   assert.deepEqual(goal.evidence, []);
+  assert.deepEqual(goal.pinnedEvidence, []);
   assert.deepEqual(goal.iterations, []);
 });
 
@@ -132,7 +135,10 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
     assumptions: ["assumption"],
     risks: ["risk"],
     blockers: ["blocker"],
+    blockerHistory: [{ timestamp: "b", status: "active", reason: "blocker" }],
+    doctrine: ["doctrine"],
     evidence: ["evidence"],
+    pinnedEvidence: ["pinned evidence"],
     reviews: [{ timestamp: "t", verdict: "not_ready", findings: ["gap"], unresolvedGaps: ["gap"], evidenceSummary: "checked" }],
     notes: [{ timestamp: "n", text: "note" }],
     iterations: [{ step: 1 }],
@@ -149,7 +155,10 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
   assert.deepEqual(packet.state.assumptions, ["assumption"]);
   assert.deepEqual(packet.state.risks, ["risk"]);
   assert.deepEqual(packet.state.blockers, ["blocker"]);
+  assert.deepEqual(packet.state.blockerHistory, [{ timestamp: "b", status: "active", reason: "blocker" }]);
+  assert.deepEqual(packet.state.doctrine, ["doctrine"]);
   assert.deepEqual(packet.state.evidence, ["evidence"]);
+  assert.deepEqual(packet.state.pinnedEvidence, ["pinned evidence"]);
   assert.equal(packet.state.latestReview.verdict, "not_ready");
   assert.equal(packet.scaffold.id, "default");
   assert.equal(packet.scaffold.body, "Do work");
@@ -248,12 +257,14 @@ test("strategic reviews are distinguished from terminal completion reviews", () 
 
 test("applyGoalAgentReport merges proposed durable state and evidence", () => {
   const merged = applyGoalAgentReport(baseGoal(), workerReport({
+    recommendedDoctrine: ["Keep durable state compact and evidence-backed."],
     proposedState: {
       factsToAdd: ["Fact A"],
       assumptionsToAdd: ["Assumption A"],
       risksToAdd: ["Risk A"],
       blockersToAdd: ["Potential blocker A"],
       evidenceToAdd: [evidence("command", "npm test")],
+      pinnedEvidenceToAdd: [evidence("artifact", "release-note")],
       checklist: [{ text: "Merge tested", done: true, evidence: "unit test" }],
     },
   }), {}, { now: "2026-01-01T00:00:00.000Z" });
@@ -262,8 +273,11 @@ test("applyGoalAgentReport merges proposed durable state and evidence", () => {
   assert.deepEqual(merged.assumptions, ["Assumption A"]);
   assert.deepEqual(merged.risks, ["Risk A"]);
   assert.deepEqual(merged.blockers, ["Potential blocker A"]);
+  assert.deepEqual(merged.doctrine, ["Keep durable state compact and evidence-backed."]);
   assert.equal(merged.checklist[0].done, true);
   assert.equal(merged.evidence.length, 2);
+  assert.equal(merged.pinnedEvidence.length, 1);
+  assert.equal(merged.blockerHistory[0].status, "potential");
   assert.equal(merged.notes.at(-1).timestamp, "2026-01-01T00:00:00.000Z");
 });
 
@@ -387,6 +401,8 @@ test("applyGoalAgentReport follows waiting and blocked policies", () => {
   assert.equal(blocked.status, "blocked");
   assert.equal(blocked.stopReason, "blocked");
   assert.deepEqual(blocked.blockers, ["Need user token"]);
+  assert.equal(blocked.blockerHistory.at(-1).status, "active");
+  assert.equal(blocked.blockerHistory.at(-1).needed, "User provides token");
 
   const blockedDowngraded = applyGoalAgentReport(baseGoal(), workerReport({
     outcome: "blocked",

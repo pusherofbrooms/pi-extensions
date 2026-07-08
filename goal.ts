@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const MAX_OBJECTIVE_CHARS = 4000;
 const CONTINUATION_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
+const MAX_STORED_ITERATIONS = 50;
 const MODULE_DIR = typeof __dirname === "string" ? __dirname : dirname(fileURLToPath(import.meta.url));
 const STORE_DIR = join(homedir(), ".pi", "agent", "goals");
 const GOALS_DIR = join(STORE_DIR, "goals");
@@ -60,6 +61,14 @@ type GoalNoteEntry = {
   text: string;
 };
 
+type GoalBlockerHistoryEntry = {
+  timestamp: string;
+  status: "active" | "potential" | "resolved";
+  reason: string;
+  needed?: string;
+  evidence?: string[];
+};
+
 type GoalSubagentRole = "worker" | "reviewer" | "observer" | "researcher" | "experimenter";
 
 type GoalSubagentSessionRef = {
@@ -91,6 +100,7 @@ type GoalAgentReport = {
     risksToAdd?: string[];
     blockersToAdd?: string[];
     evidenceToAdd?: GoalEvidenceRef[];
+    pinnedEvidenceToAdd?: GoalEvidenceRef[];
     checklist?: GoalChecklistItem[];
   };
   criteriaUpdates?: {
@@ -145,7 +155,10 @@ type StoredGoal = {
   assumptions?: string[];
   risks?: string[];
   blockers?: string[];
+  blockerHistory?: GoalBlockerHistoryEntry[];
+  doctrine?: string[];
   evidence?: string[];
+  pinnedEvidence?: string[];
   iterations?: GoalIteration[];
   reviewEvery?: number;
   lastReviewStep?: number;
@@ -392,7 +405,7 @@ function goalForModel(goal: StoredGoal): StoredGoal {
 }
 
 function appendGoalIteration(goal: StoredGoal, iteration: GoalIteration): StoredGoal {
-  return { ...goal, iterations: [...(goal.iterations ?? []), iteration].slice(-50) };
+  return { ...goal, iterations: [...(goal.iterations ?? []), iteration].slice(-MAX_STORED_ITERATIONS) };
 }
 
 function renderGoalForModel(goal: StoredGoal): string {
@@ -404,6 +417,8 @@ function renderGoalForModel(goal: StoredGoal): string {
     ["Assumptions", goal.assumptions],
     ["Risks", goal.risks],
     ["Blockers", goal.blockers],
+    ["Doctrine", goal.doctrine],
+    ["Pinned evidence", goal.pinnedEvidence],
     ["Evidence", goal.evidence],
   ].map(([label, values]) => `${label}:\n${(values as string[] | undefined)?.length ? (values as string[]).map((value) => `- ${value}`).join("\n") : "- None recorded."}`).join("\n\n");
   const latestReview = goal.reviews?.at(-1);
@@ -859,7 +874,7 @@ function goalHelp(): string {
 /goal scaffold status                 Show current scaffold.
 
 Model tools for long-horizon goals:
-get_goal, goal_note, goal_criteria, goal_criterion_update, goal_review, goal_block, update_goal.`;
+get_goal, goal_inspect_session, goal_note, goal_criteria, goal_criterion_update, goal_review, goal_block, update_goal.`;
 }
 
 export default function goalExtension(pi: ExtensionAPI) {
@@ -1020,7 +1035,10 @@ export default function goalExtension(pi: ExtensionAPI) {
         assumptions: [],
         risks: [],
         blockers: [],
+        blockerHistory: [],
+        doctrine: [],
         evidence: [],
+        pinnedEvidence: [],
         iterations: [],
         nextAction: "Inspect the goal and choose the first concrete action.",
         notes: [{ timestamp: nowIso(), text: "Goal created. Do not store secrets in goal notes." }],
@@ -1048,6 +1066,32 @@ export default function goalExtension(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: renderGoalForModel(goal) }],
         details: { active: goal.status === "active", goal: goalForModel(goal), path: goalPath(goal.id) },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_inspect_session",
+    label: "Goal Inspect Session",
+    description: "Inspect a persisted subagent session referenced by the current goal iteration log. Use this for targeted audit/debugging without bloating durable goal state.",
+    parameters: Type.Object({
+      sessionFile: Type.Optional(Type.String({ description: "Exact sessionFile path from a current goal iteration. Defaults to the most recent referenced session." })),
+      maxChars: Type.Optional(Type.Number({ description: "Maximum trailing characters to return; default 12000, capped at 50000." })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const goal = await reloadRuntime(ctx);
+      if (!goal) return { content: [{ type: "text", text: "No current goal found." }], details: { found: false } };
+      const refs = (goal.iterations ?? []).flatMap((iteration) => iteration.sessionRefs ?? []).filter((ref) => ref.sessionFile);
+      const selected = params.sessionFile ? refs.find((ref) => ref.sessionFile === params.sessionFile) : refs.at(-1);
+      if (!selected?.sessionFile) {
+        return { content: [{ type: "text", text: params.sessionFile ? "Session file is not referenced by the current goal." : "No referenced subagent sessions found." }], details: { found: false } };
+      }
+      const maxChars = Math.min(Math.max(Math.floor(params.maxChars ?? 12000), 1000), 50000);
+      const raw = await readFile(selected.sessionFile, "utf8");
+      const text = raw.length > maxChars ? raw.slice(-maxChars) : raw;
+      return {
+        content: [{ type: "text", text }],
+        details: { found: true, sessionRef: selected, truncated: raw.length > maxChars, returnedChars: text.length, totalChars: raw.length },
       };
     },
   });
@@ -1158,7 +1202,10 @@ export default function goalExtension(pi: ExtensionAPI) {
         assumptions: [],
         risks: [],
         blockers: [],
+        blockerHistory: [],
+        doctrine: [],
         evidence: [],
+        pinnedEvidence: [],
         iterations: [],
         nextAction: "Inspect the goal and choose the first concrete action.",
         notes: [{ timestamp: nowIso(), text: "Goal created via goal_start tool. Do not store secrets in goal notes." }],

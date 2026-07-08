@@ -8,7 +8,10 @@ export function normalizeGoal(goal) {
     assumptions: Array.isArray(goal.assumptions) ? goal.assumptions : [],
     risks: Array.isArray(goal.risks) ? goal.risks : [],
     blockers: Array.isArray(goal.blockers) ? goal.blockers : [],
+    blockerHistory: Array.isArray(goal.blockerHistory) ? goal.blockerHistory : [],
+    doctrine: Array.isArray(goal.doctrine) ? goal.doctrine : [],
     evidence: Array.isArray(goal.evidence) ? goal.evidence : [],
+    pinnedEvidence: Array.isArray(goal.pinnedEvidence) ? goal.pinnedEvidence : [],
     iterations: Array.isArray(goal.iterations) ? goal.iterations : [],
   };
 }
@@ -144,7 +147,10 @@ export function buildGoalContextPacket(goal, scaffold, request = {}) {
       assumptions: normalized.assumptions,
       risks: normalized.risks,
       blockers: normalized.blockers,
+      blockerHistory: normalized.blockerHistory,
+      doctrine: normalized.doctrine,
       evidence: normalized.evidence,
+      pinnedEvidence: normalized.pinnedEvidence,
       latestReview,
       recentNotes: Array.isArray(normalized.notes) ? normalized.notes.slice(-8) : [],
       recentIterations: normalized.iterations.slice(-5),
@@ -272,6 +278,10 @@ export function validateGoalAgentReport(report) {
     if (!Array.isArray(proposed.evidenceToAdd)) throw new Error("proposedState.evidenceToAdd must be an array.");
     proposed.evidenceToAdd.forEach((item, index) => validateEvidenceRef(item, `proposedState.evidenceToAdd[${index}]`));
   }
+  if (proposed.pinnedEvidenceToAdd !== undefined) {
+    if (!Array.isArray(proposed.pinnedEvidenceToAdd)) throw new Error("proposedState.pinnedEvidenceToAdd must be an array.");
+    proposed.pinnedEvidenceToAdd.forEach((item, index) => validateEvidenceRef(item, `proposedState.pinnedEvidenceToAdd[${index}]`));
+  }
   if (report.criteriaUpdates !== undefined) {
     if (!Array.isArray(report.criteriaUpdates)) throw new Error("criteriaUpdates must be an array.");
     report.criteriaUpdates.forEach((item, index) => {
@@ -353,7 +363,9 @@ export function applyGoalAgentReport(goal, report, scaffold = {}, options = {}) 
   const criteria = mergeCriteria(goal.criteria ?? [], proposed, updates);
   const reviewVerdict = effectiveOutcome === "blocked" ? "blocked" : effectiveOutcome === "ready_for_review" ? "ready_to_complete" : "not_ready";
   const shouldRecordReview = effectiveOutcome === "ready_for_review" || effectiveOutcome === "blocked";
-  const evidenceSummary = formatEvidenceRefs([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])]).join("; ") || report.summary;
+  const evidenceRefs = formatEvidenceRefs([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])]);
+  const pinnedEvidenceRefs = formatEvidenceRefs(report.proposedState?.pinnedEvidenceToAdd ?? []);
+  const evidenceSummary = [...evidenceRefs, ...pinnedEvidenceRefs].join("; ") || report.summary;
   const review = shouldRecordReview ? {
     timestamp: now,
     verdict: reviewVerdict,
@@ -370,6 +382,9 @@ export function applyGoalAgentReport(goal, report, scaffold = {}, options = {}) 
     report.wait?.condition ? `Wait condition: ${report.wait.condition}` : undefined,
     report.wait?.resumeTrigger ? `Resume trigger: ${report.wait.resumeTrigger}` : undefined,
   ].filter(Boolean);
+  const blockerHistoryEntries = effectiveOutcome === "blocked"
+    ? [{ timestamp: now, status: "active", reason: report.blocker?.reason ?? report.summary, needed: report.blocker?.needed, evidence: formatEvidenceRefs(report.blocker?.evidence ?? []) }]
+    : (report.proposedState?.blockersToAdd ?? []).map((reason) => ({ timestamp: now, status: "potential", reason }));
 
   return {
     ...goal,
@@ -384,7 +399,10 @@ export function applyGoalAgentReport(goal, report, scaffold = {}, options = {}) 
     assumptions: appendUniqueStrings(goal.assumptions, report.proposedState?.assumptionsToAdd),
     risks: appendUniqueStrings(goal.risks, report.proposedState?.risksToAdd),
     blockers: effectiveOutcome === "blocked" ? appendUniqueStrings(goal.blockers, [report.blocker?.reason ?? report.summary]) : appendUniqueStrings(goal.blockers, report.proposedState?.blockersToAdd),
-    evidence: appendUniqueStrings(goal.evidence, formatEvidenceRefs([...(report.evidence ?? []), ...(report.proposedState?.evidenceToAdd ?? [])])),
+    blockerHistory: [...(goal.blockerHistory ?? []), ...blockerHistoryEntries].slice(-50),
+    doctrine: appendUniqueStrings(goal.doctrine, report.recommendedDoctrine),
+    evidence: appendUniqueStrings(goal.evidence, evidenceRefs),
+    pinnedEvidence: appendUniqueStrings(goal.pinnedEvidence, pinnedEvidenceRefs),
     nextAction: effectiveOutcome === "ready_for_review"
       ? "Parent should verify readiness and complete the goal if evidence is sufficient."
       : report.nextAction ?? report.wait?.resumeTrigger ?? report.wait?.condition ?? report.blocker?.needed ?? goal.nextAction,
