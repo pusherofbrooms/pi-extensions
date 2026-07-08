@@ -399,11 +399,11 @@ test("applyGoalReviewerReport completes only when reviewer verdict and readiness
   });
   assert.equal(ready.status, "complete");
 
-  const missingCriterion = applyGoalReviewerReport(baseGoal(), {
+  const reviewedPendingCriterion = applyGoalReviewerReport(baseGoal(), {
     schemaVersion: 1,
     role: "reviewer",
     outcome: "review_complete",
-    summary: "Looks ready but criterion is pending.",
+    summary: "Criterion is proven by terminal review.",
     confidence: "medium",
     actions: [{ summary: "Reviewed." }],
     evidence: [evidence("observation", "goal state")],
@@ -411,7 +411,9 @@ test("applyGoalReviewerReport completes only when reviewer verdict and readiness
     findings: ["Review says ready."],
     criteriaAssessment: [provenAssessment()],
   });
-  assert.equal(missingCriterion.status, "active");
+  assert.equal(reviewedPendingCriterion.status, "complete");
+  assert.equal(reviewedPendingCriterion.criteria[0].status, "passed");
+  assert.match(reviewedPendingCriterion.criteria[0].evidence, /criterion CRIT-001/);
 
   const notReady = applyGoalReviewerReport(readyGoal, {
     schemaVersion: 1,

@@ -458,6 +458,13 @@ export function applyGoalReviewerReport(goal, report, options = {}) {
   const assessmentGaps = reviewKind === "terminal" ? reviewerCriteriaAssessmentGaps(goal.criteria ?? [], report.criteriaAssessment ?? [], { requireProven: report.verdict === "ready_to_complete" }) : [];
   if (reviewKind === "terminal" && assessmentGaps.length) throw new Error(`Terminal reviewer criteriaAssessment is incomplete: ${assessmentGaps.join("; ")}`);
   const structuredEvidence = formatEvidenceRefs(report.evidence);
+  const criteria = reviewKind === "terminal" && report.verdict === "ready_to_complete"
+    ? (goal.criteria ?? []).map((criterion) => {
+      const assessment = (report.criteriaAssessment ?? []).find((item) => item.id === criterion.id && item.status === "proven");
+      if (!assessment) return criterion;
+      return { ...criterion, status: "passed", evidence: formatEvidenceRefs(assessment.evidence).join("; ") || assessment.reason || criterion.evidence };
+    })
+    : goal.criteria;
   const review = {
     timestamp: now,
     kind: reviewKind,
@@ -471,6 +478,7 @@ export function applyGoalReviewerReport(goal, report, options = {}) {
   validateReview(review);
   const reviewed = {
     ...goal,
+    criteria,
     reviews: [...(goal.reviews ?? []), review].slice(-20),
     lastReviewStep: goal.stepCount,
     evidence: appendUniqueStrings(goal.evidence, formatEvidenceRefs(report.evidence)),

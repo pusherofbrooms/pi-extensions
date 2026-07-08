@@ -737,14 +737,13 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   const report = workerRun.report;
   const afterReport = applyDelegatedReport(afterResearch, report, scaffold);
   const nextStep = goal.stepCount + 1;
-  const readiness = report.outcome === "ready_for_review" ? completionReadiness(afterReport) : { ready: false, missing: [] as string[] };
 
   let parentReview: GoalAgentReport | undefined;
   let parentReviewSessionFile: string | undefined;
   let reviewedReport = afterReport;
   let completed = false;
 
-  if (report.outcome === "ready_for_review" && readiness.ready && workflowPlan.reviewOnReady) {
+  if (report.outcome === "ready_for_review" && workflowPlan.reviewOnReady) {
     if (ctx.hasUI) ctx.ui.notify("Delegated worker proposed completion; running parent verification...", "info");
     const parentReviewRun = await runParentReview(afterReport, report, scaffold, ctx);
     parentReview = parentReviewRun.report;
@@ -752,9 +751,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     reviewedReport = applyGoalReviewerReport(afterReport, parentReview) as StoredGoal;
     completed = reviewedReport.status === "complete";
   } else if (report.outcome === "ready_for_review") {
-    const gaps = readiness.ready && !workflowPlan.reviewOnReady
-      ? [`Workflow '${workflowPlan.workflow}' does not run parent review automatically.`]
-      : readiness.missing;
+    const gaps = [`Workflow '${workflowPlan.workflow}' does not run parent review automatically.`];
     reviewedReport = {
       ...afterReport,
       reviews: [...(afterReport.reviews ?? []), {
@@ -800,7 +797,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     : report.outcome === "ready_for_review"
       ? parentReview
         ? `Delegated worker proposed completion, but parent verification says not ready.\n\n${parentReview.commentary ?? parentReview.summary}\n\nGaps:\n${(parentReview.unresolvedGaps ?? []).map((item) => `- ${item}`).join("\n")}`
-        : `Delegated worker thinks goal may be complete, but readiness check found gaps:\n${readiness.missing.map((item) => `- ${item}`).join("\n")}`
+        : `Delegated worker thinks goal may be complete, but workflow '${workflowPlan.workflow}' does not run parent review automatically.`
       : `Delegated goal step ${nextStep}: ${report.outcome}\n${report.summary}`;
   pi.sendMessage({ customType: "goal-delegated-step", content: message, display: true, details: { observerReport, researcherReport, report, parentReview, goal: goalForModel(updated), path: goalPath(updated.id) } });
 
