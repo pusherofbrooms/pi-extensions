@@ -207,6 +207,11 @@ export function latestTerminalReview(reviews = []) {
   return [...(reviews ?? [])].reverse().find((review) => (review.kind ?? "terminal") === "terminal");
 }
 
+function reviewHasStructuredEvidence(review) {
+  if (Array.isArray(review?.evidence) && review.evidence.length > 0) return true;
+  return (review?.criteriaAssessment ?? []).some((item) => Array.isArray(item.evidence) && item.evidence.length > 0);
+}
+
 export function completionReadiness(goal) {
   const normalized = normalizeGoal(goal);
   const missing = [];
@@ -219,6 +224,8 @@ export function completionReadiness(goal) {
   else {
     if (terminalReview.verdict !== "ready_to_complete") missing.push(`latest terminal review verdict is ${terminalReview.verdict}`);
     if (terminalReview.unresolvedGaps?.length) missing.push("latest terminal review has unresolved gaps");
+    if (!reviewHasStructuredEvidence(terminalReview)) missing.push("latest terminal review is missing structured evidence");
+    missing.push(...reviewerCriteriaAssessmentGaps(normalized.criteria, Array.isArray(terminalReview.criteriaAssessment) ? terminalReview.criteriaAssessment : [], { requireProven: true }));
   }
   if (normalized.status === "blocked") missing.push("goal is blocked");
   return { ready: missing.length === 0, missing };
@@ -230,6 +237,7 @@ const REPORT_CONFIDENCE = ["low", "medium", "high"];
 const EVIDENCE_KINDS = ["command", "file", "test", "url", "session", "observation", "artifact"];
 const EVIDENCE_STATUSES = ["passed", "failed", "observed", "created", "modified", "not_run"];
 const CRITERION_OPERATIONS = ["add", "update_status"];
+const CRITERIA_ASSESSMENT_STATUSES = ["proven", "not_proven", "contradicted", "missing_evidence"];
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -249,6 +257,38 @@ function validateStringArray(value, path, required = false) {
     return;
   }
   if (!Array.isArray(value) || value.some((item) => !isNonEmptyString(item))) throw new Error(`${path} must be an array of non-empty strings.`);
+}
+
+function validateCriteriaAssessmentItems(value, path = "criteriaAssessment") {
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array.`);
+  value.forEach((item, index) => {
+    if (!item || typeof item !== "object") throw new Error(`${path}[${index}] must be an object.`);
+    if (!isNonEmptyString(item.id)) throw new Error(`${path}[${index}].id is required.`);
+    if (!CRITERIA_ASSESSMENT_STATUSES.includes(item.status)) throw new Error(`${path}[${index}].status is invalid.`);
+    if (!isNonEmptyString(item.reason)) throw new Error(`${path}[${index}].reason is required.`);
+    if (item.evidence !== undefined) {
+      if (!Array.isArray(item.evidence)) throw new Error(`${path}[${index}].evidence must be an array.`);
+      item.evidence.forEach((evidence, evidenceIndex) => validateEvidenceRef(evidence, `${path}[${index}].evidence[${evidenceIndex}]`));
+    }
+  });
+}
+
+function reviewerCriteriaAssessmentGaps(criteria = [], criteriaAssessment = [], { requireProven = false } = {}) {
+  const gaps = [];
+  const expectedIds = new Set((criteria ?? []).map((criterion) => criterion.id));
+  const seen = new Set();
+  for (const item of criteriaAssessment ?? []) {
+    if (seen.has(item.id)) gaps.push(`${item.id} has duplicate reviewer assessments`);
+    seen.add(item.id);
+    if (!expectedIds.has(item.id)) gaps.push(`${item.id} is not a current criterion`);
+  }
+  for (const criterion of criteria ?? []) {
+    const assessment = (criteriaAssessment ?? []).find((item) => item.id === criterion.id);
+    if (!assessment) gaps.push(`${criterion.id} is missing reviewer assessment`);
+    else if (requireProven && assessment.status !== "proven") gaps.push(`${criterion.id} reviewer assessment is ${assessment.status}`);
+    else if (requireProven && (!Array.isArray(assessment.evidence) || assessment.evidence.length === 0)) gaps.push(`${criterion.id} reviewer assessment is missing evidence`);
+  }
+  return gaps;
 }
 
 export function validateGoalAgentReport(report) {
@@ -323,7 +363,7 @@ export function validateGoalAgentReport(report) {
     if (!Array.isArray(report.findings) || report.findings.length === 0 || report.findings.some((item) => !isNonEmptyString(item))) throw new Error("Reviewer report findings must be a non-empty array of strings.");
     if (report.verdict !== "ready_to_complete" && (!Array.isArray(report.unresolvedGaps) || report.unresolvedGaps.length === 0)) throw new Error("Non-ready reviewer reports require unresolvedGaps.");
     if (report.verdict === "ready_to_complete" && report.unresolvedGaps?.length) throw new Error("Ready reviewer reports must not include unresolvedGaps.");
-    if (!Array.isArray(report.criteriaAssessment)) throw new Error("Reviewer report criteriaAssessment must be an array.");
+    validateCriteriaAssessmentItems(report.criteriaAssessment, "criteriaAssessment");
   }
   return report;
 }
@@ -414,13 +454,19 @@ export function applyGoalAgentReport(goal, report, scaffold = {}, options = {}) 
 export function applyGoalReviewerReport(goal, report, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const reviewKind = options.reviewKind ?? "terminal";
+  validateCriteriaAssessmentItems(report.criteriaAssessment ?? [], "criteriaAssessment");
+  const assessmentGaps = reviewKind === "terminal" ? reviewerCriteriaAssessmentGaps(goal.criteria ?? [], report.criteriaAssessment ?? [], { requireProven: report.verdict === "ready_to_complete" }) : [];
+  if (reviewKind === "terminal" && assessmentGaps.length) throw new Error(`Terminal reviewer criteriaAssessment is incomplete: ${assessmentGaps.join("; ")}`);
+  const structuredEvidence = formatEvidenceRefs(report.evidence);
   const review = {
     timestamp: now,
     kind: reviewKind,
     verdict: report.verdict,
     findings: report.findings ?? [report.summary],
     unresolvedGaps: report.verdict === "ready_to_complete" ? undefined : report.unresolvedGaps ?? [report.summary],
-    evidenceSummary: formatEvidenceRefs(report.evidence).join("; ") || report.summary,
+    evidenceSummary: structuredEvidence.join("; ") || report.summary,
+    evidence: structuredEvidence,
+    criteriaAssessment: report.criteriaAssessment ?? [],
   };
   validateReview(review);
   const reviewed = {

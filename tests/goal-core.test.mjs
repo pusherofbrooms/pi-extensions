@@ -55,6 +55,8 @@ function workerReport(overrides = {}) {
   };
 }
 
+const provenAssessment = (id = "CRIT-001") => ({ id, status: "proven", reason: "Criterion evidence was verified.", evidence: [evidence("observation", `criterion ${id}`)] });
+
 test("normalizeGoal adds new goal fields for old stored goals", () => {
   const goal = normalizeGoal({ id: "g1", status: "active" });
   assert.equal(goal.scaffold, "default");
@@ -231,11 +233,14 @@ test("validateReview requires findings, evidence, and gaps for non-ready verdict
   assert.doesNotThrow(() => validateReview({ verdict: "not_ready", findings: ["x"], unresolvedGaps: ["gap"], evidenceSummary: "x" }));
 });
 
-test("completionReadiness requires criteria evidence and ready terminal review", () => {
+test("completionReadiness requires criteria evidence, reviewer assessment evidence, and ready terminal review", () => {
   const base = { status: "active", criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] };
+  const terminalReview = { verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof", evidence: ["observation:goal state — observed: proof"], criteriaAssessment: [provenAssessment()] };
   assert.equal(completionReadiness(base).ready, false);
-  assert.equal(completionReadiness({ ...base, reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof" }] }).ready, true);
-  assert.equal(completionReadiness({ ...base, status: "blocked", reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof" }] }).ready, false);
+  assert.equal(completionReadiness({ ...base, reviews: [terminalReview] }).ready, true);
+  assert.equal(completionReadiness({ ...base, reviews: [{ ...terminalReview, criteriaAssessment: [] }] }).ready, false);
+  assert.match(completionReadiness({ ...base, reviews: [{ ...terminalReview, criteriaAssessment: [] }] }).missing.join("; "), /missing reviewer assessment/);
+  assert.equal(completionReadiness({ ...base, status: "blocked", reviews: [terminalReview] }).ready, false);
 });
 
 test("strategic reviews are distinguished from terminal completion reviews", () => {
@@ -249,7 +254,7 @@ test("strategic reviews are distinguished from terminal completion reviews", () 
 
   const withTerminal = {
     ...strategicOnly,
-    reviews: [...strategicOnly.reviews, { kind: "terminal", verdict: "ready_to_complete", findings: ["Ready."], evidenceSummary: "terminal check" }],
+    reviews: [...strategicOnly.reviews, { kind: "terminal", verdict: "ready_to_complete", findings: ["Ready."], evidenceSummary: "terminal check", evidence: ["observation:goal state — observed: terminal check"], criteriaAssessment: [provenAssessment()] }],
   };
   assert.equal(completionReadiness(withTerminal).ready, true);
   assert.equal(latestTerminalReview(withTerminal.reviews).evidenceSummary, "terminal check");
@@ -303,7 +308,7 @@ test("worker ready_for_review records readiness but does not complete goal by it
   assert.equal(merged.status, "active");
   assert.equal(merged.reviews.at(-1).verdict, "ready_to_complete");
   assert.equal(merged.nextAction, "Parent should verify readiness and complete the goal if evidence is sufficient.");
-  assert.equal(completionReadiness(merged).ready, true);
+  assert.equal(completionReadiness(merged).ready, false);
 });
 
 test("applyGoalReviewerReport records strategic reviews without completing", () => {
@@ -328,6 +333,56 @@ test("applyGoalReviewerReport records strategic reviews without completing", () 
   assert.equal(completionReadiness(strategic).ready, false);
 });
 
+test("applyGoalReviewerReport rejects ready terminal reviews with incomplete criteria assessment", () => {
+  const readyGoal = baseGoal({ criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] });
+  assert.throws(() => applyGoalReviewerReport(readyGoal, {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Ready but missing assessment.",
+    confidence: "medium",
+    actions: [{ summary: "Reviewed." }],
+    evidence: [evidence("observation", "goal state")],
+    verdict: "ready_to_complete",
+    findings: ["Looks ready."],
+    criteriaAssessment: [],
+  }), /criteriaAssessment is incomplete/);
+  assert.throws(() => applyGoalReviewerReport(readyGoal, {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Ready but assessment lacks evidence.",
+    confidence: "medium",
+    actions: [{ summary: "Reviewed." }],
+    evidence: [evidence("observation", "goal state")],
+    verdict: "ready_to_complete",
+    findings: ["Looks ready."],
+    criteriaAssessment: [{ id: "CRIT-001", status: "proven", reason: "Looks proven." }],
+  }), /missing evidence/);
+});
+
+test("completionReadiness rejects terminal reviews without structured reviewer evidence", () => {
+  const readyGoal = baseGoal({ criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] });
+  const reviewed = applyGoalReviewerReport(readyGoal, {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Ready but no top-level evidence.",
+    confidence: "medium",
+    actions: [{ summary: "Reviewed." }],
+    evidence: [],
+    verdict: "ready_to_complete",
+    findings: ["Evidence sufficient."],
+    criteriaAssessment: [provenAssessment()],
+  });
+  assert.equal(reviewed.status, "complete");
+
+  const legacy = { ...readyGoal, reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "prose only", criteriaAssessment: [provenAssessment()] }] };
+  assert.equal(completionReadiness(legacy).ready, true);
+  const noReviewerEvidence = { ...readyGoal, reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "prose only", criteriaAssessment: [{ id: "CRIT-001", status: "proven", reason: "ok" }] }] };
+  assert.equal(completionReadiness(noReviewerEvidence).ready, false);
+});
+
 test("applyGoalReviewerReport completes only when reviewer verdict and readiness agree", () => {
   const readyGoal = baseGoal({ criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] });
   const ready = applyGoalReviewerReport(readyGoal, {
@@ -340,7 +395,7 @@ test("applyGoalReviewerReport completes only when reviewer verdict and readiness
     evidence: [evidence("observation", "goal state")],
     verdict: "ready_to_complete",
     findings: ["Evidence sufficient."],
-    criteriaAssessment: [],
+    criteriaAssessment: [provenAssessment()],
   });
   assert.equal(ready.status, "complete");
 
@@ -354,7 +409,7 @@ test("applyGoalReviewerReport completes only when reviewer verdict and readiness
     evidence: [evidence("observation", "goal state")],
     verdict: "ready_to_complete",
     findings: ["Review says ready."],
-    criteriaAssessment: [],
+    criteriaAssessment: [provenAssessment()],
   });
   assert.equal(missingCriterion.status, "active");
 
@@ -369,7 +424,7 @@ test("applyGoalReviewerReport completes only when reviewer verdict and readiness
     verdict: "not_ready",
     findings: ["Missing docs."],
     unresolvedGaps: ["Update docs."],
-    criteriaAssessment: [],
+    criteriaAssessment: [{ id: "CRIT-001", status: "not_proven", reason: "Docs were not updated." }],
   });
   assert.equal(notReady.status, "active");
   assert.equal(notReady.nextAction, "Update docs.");
