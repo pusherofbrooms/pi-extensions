@@ -8,6 +8,7 @@ import {
   blockedStatusFromReport,
   buildGoalContextPacket,
   completionReadiness,
+  latestTerminalReview,
   mergeCriteria,
   normalizeCriteriaInputs,
   normalizeGoal,
@@ -228,6 +229,23 @@ test("completionReadiness requires criteria evidence and ready terminal review",
   assert.equal(completionReadiness({ ...base, status: "blocked", reviews: [{ verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof" }] }).ready, false);
 });
 
+test("strategic reviews are distinguished from terminal completion reviews", () => {
+  const base = { status: "active", criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] };
+  const strategicOnly = {
+    ...base,
+    reviews: [{ kind: "strategic", verdict: "ready_to_complete", findings: ["May be ready."], evidenceSummary: "strategic check" }],
+  };
+  assert.equal(completionReadiness(strategicOnly).ready, false);
+  assert.equal(latestTerminalReview(strategicOnly.reviews), undefined);
+
+  const withTerminal = {
+    ...strategicOnly,
+    reviews: [...strategicOnly.reviews, { kind: "terminal", verdict: "ready_to_complete", findings: ["Ready."], evidenceSummary: "terminal check" }],
+  };
+  assert.equal(completionReadiness(withTerminal).ready, true);
+  assert.equal(latestTerminalReview(withTerminal.reviews).evidenceSummary, "terminal check");
+});
+
 test("applyGoalAgentReport merges proposed durable state and evidence", () => {
   const merged = applyGoalAgentReport(baseGoal(), workerReport({
     proposedState: {
@@ -272,6 +290,28 @@ test("worker ready_for_review records readiness but does not complete goal by it
   assert.equal(merged.reviews.at(-1).verdict, "ready_to_complete");
   assert.equal(merged.nextAction, "Parent should verify readiness and complete the goal if evidence is sufficient.");
   assert.equal(completionReadiness(merged).ready, true);
+});
+
+test("applyGoalReviewerReport records strategic reviews without completing", () => {
+  const readyGoal = baseGoal({ criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] });
+  const strategic = applyGoalReviewerReport(readyGoal, {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Strategic review says terminal review may be warranted.",
+    confidence: "medium",
+    actions: [{ summary: "Reviewed strategy." }],
+    evidence: [evidence("observation", "goal state")],
+    verdict: "ready_to_complete",
+    findings: ["Evidence appears strong enough to request terminal review."],
+    criteriaAssessment: [],
+    nextAction: "Request terminal completion review.",
+  }, { reviewKind: "strategic", now: "2026-01-01T00:00:00.000Z" });
+
+  assert.equal(strategic.status, "active");
+  assert.equal(strategic.reviews.at(-1).kind, "strategic");
+  assert.equal(strategic.nextAction, "Request terminal completion review.");
+  assert.equal(completionReadiness(strategic).ready, false);
 });
 
 test("applyGoalReviewerReport completes only when reviewer verdict and readiness agree", () => {

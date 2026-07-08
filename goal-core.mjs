@@ -188,12 +188,17 @@ export function applyCriterionUpdates(criteria, updates) {
 }
 
 export function validateReview(review) {
+  if (review.kind !== undefined && !["terminal", "strategic"].includes(review.kind)) throw new Error(`Invalid review kind: ${review.kind}`);
   if (!["ready_to_complete", "not_ready", "blocked"].includes(review.verdict)) throw new Error(`Invalid review verdict: ${review.verdict}`);
   if (!Array.isArray(review.findings) || review.findings.length === 0 || review.findings.some((item) => !item?.trim())) throw new Error("Review findings are required.");
   if (!review.evidenceSummary?.trim()) throw new Error("Review evidenceSummary is required.");
   if ((review.verdict === "not_ready" || review.verdict === "blocked") && (!Array.isArray(review.unresolvedGaps) || review.unresolvedGaps.length === 0)) {
     throw new Error(`Review verdict ${review.verdict} requires unresolvedGaps.`);
   }
+}
+
+export function latestTerminalReview(reviews = []) {
+  return [...(reviews ?? [])].reverse().find((review) => (review.kind ?? "terminal") === "terminal");
 }
 
 export function completionReadiness(goal) {
@@ -203,11 +208,11 @@ export function completionReadiness(goal) {
     if (criterion.status !== "passed") missing.push(`${criterion.id} is ${criterion.status}`);
     else if (!criterion.evidence?.trim()) missing.push(`${criterion.id} is missing evidence`);
   }
-  const latestReview = normalized.reviews.at(-1);
-  if (!latestReview) missing.push("terminal review is missing");
+  const terminalReview = latestTerminalReview(normalized.reviews);
+  if (!terminalReview) missing.push("terminal review is missing");
   else {
-    if (latestReview.verdict !== "ready_to_complete") missing.push(`latest review verdict is ${latestReview.verdict}`);
-    if (latestReview.unresolvedGaps?.length) missing.push("latest review has unresolved gaps");
+    if (terminalReview.verdict !== "ready_to_complete") missing.push(`latest terminal review verdict is ${terminalReview.verdict}`);
+    if (terminalReview.unresolvedGaps?.length) missing.push("latest terminal review has unresolved gaps");
   }
   if (normalized.status === "blocked") missing.push("goal is blocked");
   return { ready: missing.length === 0, missing };
@@ -390,8 +395,10 @@ export function applyGoalAgentReport(goal, report, scaffold = {}, options = {}) 
 
 export function applyGoalReviewerReport(goal, report, options = {}) {
   const now = options.now ?? new Date().toISOString();
+  const reviewKind = options.reviewKind ?? "terminal";
   const review = {
     timestamp: now,
+    kind: reviewKind,
     verdict: report.verdict,
     findings: report.findings ?? [report.summary],
     unresolvedGaps: report.verdict === "ready_to_complete" ? undefined : report.unresolvedGaps ?? [report.summary],
@@ -403,10 +410,13 @@ export function applyGoalReviewerReport(goal, report, options = {}) {
     reviews: [...(goal.reviews ?? []), review].slice(-20),
     lastReviewStep: goal.stepCount,
     evidence: appendUniqueStrings(goal.evidence, formatEvidenceRefs(report.evidence)),
-    nextAction: report.verdict === "ready_to_complete"
-      ? "Goal verified complete by parent review."
-      : review.unresolvedGaps?.[0] ?? "Address parent verification gaps.",
+    nextAction: reviewKind === "strategic"
+      ? report.nextAction ?? review.unresolvedGaps?.[0] ?? "Continue goal execution using the strategic review findings."
+      : report.verdict === "ready_to_complete"
+        ? "Goal verified complete by parent review."
+        : review.unresolvedGaps?.[0] ?? "Address parent verification gaps.",
   };
+  if (reviewKind !== "terminal") return reviewed;
   const readiness = completionReadiness(reviewed);
   return {
     ...reviewed,
