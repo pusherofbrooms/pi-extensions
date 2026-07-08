@@ -101,6 +101,59 @@ export function recommendScaffoldId(objective = "") {
   return "default";
 }
 
+export function buildGoalContextPacket(goal, scaffold, request = {}) {
+  const normalized = normalizeGoal(goal ?? {});
+  const latestReview = normalized.reviews.at(-1) ?? null;
+  return {
+    schemaVersion: 1,
+    goal: {
+      id: normalized.id,
+      objective: normalized.objective,
+      status: normalized.status,
+      cwd: normalized.cwd,
+      stepCount: normalized.stepCount ?? 0,
+      maxIterations: normalized.maxIterations,
+      scaffold: normalized.scaffold ?? scaffold?.id ?? "default",
+      createdAt: normalized.createdAt,
+      updatedAt: normalized.updatedAt,
+      stopReason: normalized.stopReason,
+      nextAction: normalized.nextAction,
+    },
+    criteria: normalized.criteria,
+    state: {
+      summary: normalized.summary ?? "",
+      checklist: normalized.checklist ?? [],
+      facts: normalized.facts,
+      assumptions: normalized.assumptions,
+      risks: normalized.risks,
+      blockers: normalized.blockers,
+      evidence: normalized.evidence,
+      latestReview,
+      recentNotes: Array.isArray(normalized.notes) ? normalized.notes.slice(-8) : [],
+      recentIterations: normalized.iterations.slice(-5),
+    },
+    scaffold: scaffold ? {
+      id: scaffold.id,
+      name: scaffold.name,
+      description: scaffold.description,
+      body: scaffold.body,
+      source: scaffold.source,
+      path: scaffold.path,
+      policy: scaffold.policy ?? {},
+    } : undefined,
+    request: {
+      role: request.role ?? "worker",
+      action: request.action ?? "continue",
+      scheduledReview: request.scheduledReview === true,
+    },
+    reportContractHint: request.reportContractHint ?? {
+      schemaVersion: 1,
+      returnOnlyJson: true,
+      lifecycleAuthority: "orchestrator",
+    },
+  };
+}
+
 export function applyCriterionUpdates(criteria, updates) {
   const byId = new Map(criteria.map((criterion) => [criterion.id, criterion]));
   for (const update of updates ?? []) {

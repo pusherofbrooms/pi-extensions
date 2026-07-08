@@ -4,6 +4,7 @@ import {
   appendUniqueStrings,
   applyCriterionUpdates,
   blockedStatusFromReport,
+  buildGoalContextPacket,
   completionReadiness,
   mergeCriteria,
   normalizeCriteriaInputs,
@@ -73,6 +74,49 @@ test("waitingStatusFromReport follows scaffold policy", () => {
   assert.equal(waitingStatusFromReport({ outcome: "waiting" }, { waitingAllowed: true }).waiting, true);
   assert.equal(waitingStatusFromReport({ outcome: "waiting" }, { waitingAllowed: false }).waiting, false);
   assert.equal(waitingStatusFromReport({ outcome: "progress" }, { waitingAllowed: true }).waiting, false);
+});
+
+test("buildGoalContextPacket produces auditable structured subagent input", () => {
+  const goal = {
+    id: "g1",
+    objective: "Implement goal infra",
+    status: "active",
+    cwd: "/repo",
+    stepCount: 2,
+    maxIterations: 5,
+    scaffold: "default",
+    summary: "Some progress",
+    checklist: [{ text: "done", done: false }],
+    criteria: [{ id: "CRIT-001", text: "verified", status: "pending" }],
+    facts: ["fact"],
+    assumptions: ["assumption"],
+    risks: ["risk"],
+    blockers: ["blocker"],
+    evidence: ["evidence"],
+    reviews: [{ timestamp: "t", verdict: "not_ready", findings: ["gap"], unresolvedGaps: ["gap"], evidenceSummary: "checked" }],
+    notes: [{ timestamp: "n", text: "note" }],
+    iterations: [{ step: 1 }],
+    nextAction: "continue",
+  };
+  const scaffold = { id: "default", name: "Default", description: "Generic", body: "Do work", source: "bundled", policy: { workflow: "worker" } };
+  const packet = buildGoalContextPacket(goal, scaffold, { role: "reviewer", action: "verify" });
+
+  assert.equal(packet.schemaVersion, 1);
+  assert.equal(packet.goal.objective, "Implement goal infra");
+  assert.deepEqual(packet.criteria, goal.criteria);
+  assert.deepEqual(packet.state.checklist, goal.checklist);
+  assert.deepEqual(packet.state.facts, ["fact"]);
+  assert.deepEqual(packet.state.assumptions, ["assumption"]);
+  assert.deepEqual(packet.state.risks, ["risk"]);
+  assert.deepEqual(packet.state.blockers, ["blocker"]);
+  assert.deepEqual(packet.state.evidence, ["evidence"]);
+  assert.equal(packet.state.latestReview.verdict, "not_ready");
+  assert.equal(packet.scaffold.id, "default");
+  assert.equal(packet.scaffold.body, "Do work");
+  assert.equal(packet.scaffold.policy.workflow, "worker");
+  assert.equal(packet.request.role, "reviewer");
+  assert.equal(packet.request.action, "verify");
+  assert.equal(packet.reportContractHint.lifecycleAuthority, "orchestrator");
 });
 
 test("recommendScaffoldId classifies common goal shapes", () => {

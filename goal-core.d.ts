@@ -6,6 +6,7 @@ export function mergeCriteria(existing?: unknown[], proposed?: unknown[], update
 export function blockedStatusFromReport(report: unknown, policy?: Record<string, unknown>): { blocked: boolean; reason?: string };
 export function waitingStatusFromReport(report: unknown, policy?: Record<string, unknown>): { waiting: boolean; reason?: string };
 export function recommendScaffoldId(objective?: string): string;
+export function buildGoalContextPacket(goal: unknown, scaffold?: unknown, request?: Record<string, unknown>): unknown;
 export function applyCriterionUpdates(criteria: unknown[], updates: unknown[]): unknown[];
 export function validateReview(review: unknown): void;
 export function completionReadiness(goal: unknown): { ready: boolean; missing: string[] };
