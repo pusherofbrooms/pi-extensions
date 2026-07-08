@@ -3,7 +3,7 @@ name: operations
 title: Operations / spinning plates
 description: Portfolio-style management for live systems with several concerns that must stay healthy.
 goalShape: long-running-operations
-workflow: worker
+workflow: operations
 reviewEvery: 5
 completionPolicy: strict-parent-review
 blockedPolicy: external-blocker-only

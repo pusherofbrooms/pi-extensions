@@ -6,7 +6,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
 import { runAgentSession } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
-import { applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, formatEvidenceRefs, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, validateGoalAgentReport } from "./goal-core.mjs";
+import { applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, formatEvidenceRefs, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -476,12 +476,16 @@ function checkReportForSecrets(report: GoalAgentReport): string | undefined {
   return texts.map((text) => checkNoSecrets(text, "goal agent report")).find(Boolean);
 }
 
-function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold): string {
+function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan = selectGoalWorkflowPlan(scaffold)): string {
   const needsReview = !!goal.reviewEvery && goal.stepCount > 0 && goal.stepCount % goal.reviewEvery === 0 && goal.lastReviewStep !== goal.stepCount;
+  const requestedAction = needsReview ? "strategic_review" : workflowPlan.workerAction;
   const contextPacket = buildGoalContextPacket(goalForModel(goal), scaffold, {
     role: "worker",
-    action: needsReview ? "strategic_review" : "continue",
+    action: requestedAction,
     scheduledReview: needsReview,
+    workflow: workflowPlan.workflow,
+    workflowRoles: workflowPlan.roles,
+    operatingCycle: workflowPlan.operatingCycle === true,
     reportContractHint: {
       schemaVersion: 1,
       role: "worker",
@@ -490,7 +494,7 @@ function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold): string {
       lifecycleAuthority: "orchestrator",
     },
   });
-  return `${needsReview ? "Perform a strategic review for" : "Execute the next delegated continuation for"} this autonomous goal.\n\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nTurn contract:\n${needsReview ? "- This is a scheduled strategic review. Do not do broad new execution unless needed to verify state. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next focus.\n" : ""}- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteriaUpdates with operation=add before or alongside substantive progress.\n- If you think the goal is done, set outcome to ready_for_review and include concrete evidence.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked, ready_for_review.\n{\n  "schemaVersion": 1,\n  "role": "worker",\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "confidence": "medium",\n  "actions": [{ "summary": "what you did", "evidence": [{ "kind": "file", "ref": "path", "status": "modified", "summary": "what changed" }] }],\n  "evidence": [{ "kind": "command", "ref": "command run", "status": "passed", "summary": "result" }],\n  "proposedState": {\n    "factsToAdd": ["durable facts"],\n    "assumptionsToAdd": ["assumptions"],\n    "risksToAdd": ["risks"],\n    "blockersToAdd": ["non-terminal blockers/concerns"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "created", "summary": "evidence" }],\n    "checklist": [{ "text": "item", "done": true, "evidence": "brief proof" }]\n  },\n  "criteriaUpdates": [{ "operation": "add", "text": "success criterion", "status": "pending", "evidence": [] }],\n  "blocker": { "reason": "required for blocked", "needed": "what external/user action is needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "next concrete action unless blocked, waiting, or ready_for_review"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `${needsReview ? "Perform a strategic review for" : "Execute the next delegated continuation for"} this autonomous goal.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: ${workflowPlan.roles.join(" -> ")}\n- worker action: ${requestedAction}\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nTurn contract:\n${needsReview ? "- This is a scheduled strategic review. Do not do broad new execution unless needed to verify state. Review alignment, stale assumptions, evidence quality, blockers, repeated ineffective actions, and the highest-value next focus.\n" : ""}- Follow the selected workflow plan. If an observer/researcher role is listed but not implemented in this runtime yet, treat its intended inspection/research as bounded worker preflight and report what you did with evidence.\n- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteriaUpdates with operation=add before or alongside substantive progress.\n- If you think the goal is done, set outcome to ready_for_review and include concrete evidence.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked, ready_for_review.\n{\n  "schemaVersion": 1,\n  "role": "worker",\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "confidence": "medium",\n  "actions": [{ "summary": "what you did", "evidence": [{ "kind": "file", "ref": "path", "status": "modified", "summary": "what changed" }] }],\n  "evidence": [{ "kind": "command", "ref": "command run", "status": "passed", "summary": "result" }],\n  "proposedState": {\n    "factsToAdd": ["durable facts"],\n    "assumptionsToAdd": ["assumptions"],\n    "risksToAdd": ["risks"],\n    "blockersToAdd": ["non-terminal blockers/concerns"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "created", "summary": "evidence" }],\n    "checklist": [{ "text": "item", "done": true, "evidence": "brief proof" }]\n  },\n  "criteriaUpdates": [{ "operation": "add", "text": "success criterion", "status": "pending", "evidence": [] }],\n  "blocker": { "reason": "required for blocked", "needed": "what external/user action is needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "next concrete action unless blocked, waiting, or ready_for_review"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
 async function loadAgentSystemPrompt(path: string): Promise<string> {
@@ -516,12 +520,12 @@ async function runIsolatedAgent(
   return { text: result.finalText, sessionFile: result.sessionFile };
 }
 
-async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold)): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
     GOAL_WORKER_AGENT_PATH,
-    delegatedPrompt(goal, scaffold),
+    delegatedPrompt(goal, scaffold, workflowPlan),
     ["read", "grep", "find", "ls", "bash", "edit", "write"],
   );
   return { report: parseGoalAgentReport(result.text, "worker"), sessionFile: result.sessionFile };
@@ -565,7 +569,8 @@ function applyDelegatedReport(goal: StoredGoal, report: GoalAgentReport, scaffol
 async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal): Promise<void> {
   if (ctx.hasUI) ctx.ui.notify(`Running delegated goal step ${goal.stepCount + 1}...`, "info");
   const scaffold = await loadScaffold(ctx.cwd, goal.scaffold ?? "default");
-  const workerRun = await runGoalWorker(goal, scaffold, ctx);
+  const workflowPlan = selectGoalWorkflowPlan(scaffold);
+  const workerRun = await runGoalWorker(goal, scaffold, ctx, workflowPlan);
   const report = workerRun.report;
   const afterReport = applyDelegatedReport(goal, report, scaffold);
   const nextStep = goal.stepCount + 1;
@@ -576,7 +581,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   let reviewedReport = afterReport;
   let completed = false;
 
-  if (report.outcome === "ready_for_review" && readiness.ready) {
+  if (report.outcome === "ready_for_review" && readiness.ready && workflowPlan.reviewOnReady) {
     if (ctx.hasUI) ctx.ui.notify("Delegated worker proposed completion; running parent verification...", "info");
     const parentReviewRun = await runParentReview(afterReport, report, scaffold, ctx);
     parentReview = parentReviewRun.report;
@@ -584,16 +589,19 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     reviewedReport = applyGoalReviewerReport(afterReport, parentReview) as StoredGoal;
     completed = reviewedReport.status === "complete";
   } else if (report.outcome === "ready_for_review") {
+    const gaps = readiness.ready && !workflowPlan.reviewOnReady
+      ? [`Workflow '${workflowPlan.workflow}' does not run parent review automatically.`]
+      : readiness.missing;
     reviewedReport = {
       ...afterReport,
       reviews: [...(afterReport.reviews ?? []), {
         timestamp: nowIso(),
         verdict: "not_ready" as const,
         findings: ["Programmatic readiness check rejected delegated completion before parent verification."],
-        unresolvedGaps: readiness.missing,
-        evidenceSummary: `Delegated worker proposed review, but readiness gaps remain: ${readiness.missing.join("; ")}`,
+        unresolvedGaps: gaps,
+        evidenceSummary: `Delegated worker proposed review, but readiness gaps remain: ${gaps.join("; ")}`,
       }].slice(-20),
-      nextAction: `Address readiness gaps before parent verification: ${readiness.missing.join("; ")}`,
+      nextAction: `Address readiness gaps before parent verification: ${gaps.join("; ")}`,
     };
   }
 

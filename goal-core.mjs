@@ -101,6 +101,23 @@ export function recommendScaffoldId(objective = "") {
   return "default";
 }
 
+const SUPPORTED_WORKFLOWS = ["worker", "worker-reviewer", "observer-worker", "research-worker", "operations"];
+
+export function selectGoalWorkflowPlan(scaffold = {}) {
+  const rawWorkflow = typeof scaffold?.policy?.workflow === "string" ? scaffold.policy.workflow.trim().toLowerCase() : "";
+  const workflow = SUPPORTED_WORKFLOWS.includes(rawWorkflow) ? rawWorkflow : "worker";
+  const fallbackReason = rawWorkflow && rawWorkflow !== workflow ? `Unknown scaffold workflow '${rawWorkflow}' fell back to worker.` : undefined;
+  const reviewOnReady = scaffold?.policy?.completionPolicy !== "worker-only";
+  const plans = {
+    worker: { workflow, roles: ["worker"], workerAction: "continue", reviewOnReady, lifecycleAuthority: "orchestrator" },
+    "worker-reviewer": { workflow, roles: ["worker", "reviewer"], workerAction: "continue", reviewOnReady: true, lifecycleAuthority: "orchestrator" },
+    "observer-worker": { workflow, roles: ["observer", "worker"], workerAction: "continue_after_observation", reviewOnReady, lifecycleAuthority: "orchestrator" },
+    "research-worker": { workflow, roles: ["researcher", "worker"], workerAction: "continue_after_research", reviewOnReady, lifecycleAuthority: "orchestrator" },
+    operations: { workflow, roles: ["worker"], workerAction: "operations_cycle", reviewOnReady, lifecycleAuthority: "orchestrator", operatingCycle: true },
+  };
+  return { ...plans[workflow], fallbackReason };
+}
+
 export function buildGoalContextPacket(goal, scaffold, request = {}) {
   const normalized = normalizeGoal(goal ?? {});
   const latestReview = normalized.reviews.at(-1) ?? null;
@@ -145,6 +162,9 @@ export function buildGoalContextPacket(goal, scaffold, request = {}) {
       role: request.role ?? "worker",
       action: request.action ?? "continue",
       scheduledReview: request.scheduledReview === true,
+      workflow: request.workflow,
+      workflowRoles: request.workflowRoles,
+      operatingCycle: request.operatingCycle === true,
     },
     reportContractHint: request.reportContractHint ?? {
       schemaVersion: 1,

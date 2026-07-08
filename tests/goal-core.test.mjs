@@ -12,6 +12,7 @@ import {
   normalizeCriteriaInputs,
   normalizeGoal,
   recommendScaffoldId,
+  selectGoalWorkflowPlan,
   validateGoalAgentReport,
   validateReview,
   waitingStatusFromReport,
@@ -155,6 +156,20 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
   assert.equal(packet.request.role, "reviewer");
   assert.equal(packet.request.action, "verify");
   assert.equal(packet.reportContractHint.lifecycleAuthority, "orchestrator");
+});
+
+test("selectGoalWorkflowPlan supports scaffold workflow metadata safely", () => {
+  assert.deepEqual(selectGoalWorkflowPlan({ policy: { workflow: "worker" } }).roles, ["worker"]);
+  assert.deepEqual(selectGoalWorkflowPlan({ policy: { workflow: "worker-reviewer" } }).roles, ["worker", "reviewer"]);
+  assert.deepEqual(selectGoalWorkflowPlan({ policy: { workflow: "observer-worker" } }).roles, ["observer", "worker"]);
+  assert.deepEqual(selectGoalWorkflowPlan({ policy: { workflow: "research-worker" } }).roles, ["researcher", "worker"]);
+  const operations = selectGoalWorkflowPlan({ policy: { workflow: "operations" } });
+  assert.equal(operations.workerAction, "operations_cycle");
+  assert.equal(operations.operatingCycle, true);
+  assert.equal(operations.lifecycleAuthority, "orchestrator");
+  const fallback = selectGoalWorkflowPlan({ policy: { workflow: "surprise" } });
+  assert.equal(fallback.workflow, "worker");
+  assert.match(fallback.fallbackReason, /Unknown scaffold workflow/);
 });
 
 test("recommendScaffoldId classifies common goal shapes", () => {
