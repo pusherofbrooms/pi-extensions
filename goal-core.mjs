@@ -12,6 +12,7 @@ export function normalizeGoal(goal) {
     doctrine: Array.isArray(goal.doctrine) ? goal.doctrine : [],
     evidence: Array.isArray(goal.evidence) ? goal.evidence : [],
     pinnedEvidence: Array.isArray(goal.pinnedEvidence) ? goal.pinnedEvidence : [],
+    roleCheckpoints: Array.isArray(goal.roleCheckpoints) ? goal.roleCheckpoints : [],
     iterations: Array.isArray(goal.iterations) ? goal.iterations : [],
   };
 }
@@ -121,6 +122,13 @@ export function selectGoalWorkflowPlan(scaffold = {}) {
   return { ...plans[workflow], fallbackReason };
 }
 
+export function appendGoalRoleCheckpoint(goal, checkpoint, maxItems = 20) {
+  return {
+    ...goal,
+    roleCheckpoints: [...(goal.roleCheckpoints ?? []), checkpoint].slice(-maxItems),
+  };
+}
+
 export function buildGoalContextPacket(goal, scaffold, request = {}) {
   const normalized = normalizeGoal(goal ?? {});
   const latestReview = normalized.reviews.at(-1) ?? null;
@@ -151,6 +159,7 @@ export function buildGoalContextPacket(goal, scaffold, request = {}) {
       doctrine: normalized.doctrine,
       evidence: normalized.evidence,
       pinnedEvidence: normalized.pinnedEvidence,
+      roleCheckpoints: normalized.roleCheckpoints.slice(-8),
       latestReview,
       recentNotes: Array.isArray(normalized.notes) ? normalized.notes.slice(-8) : [],
       recentIterations: normalized.iterations.slice(-5),

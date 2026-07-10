@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  appendGoalRoleCheckpoint,
   appendUniqueStrings,
   applyCriterionUpdates,
   applyGoalAgentReport,
@@ -70,7 +71,14 @@ test("normalizeGoal adds new goal fields for old stored goals", () => {
   assert.deepEqual(goal.doctrine, []);
   assert.deepEqual(goal.evidence, []);
   assert.deepEqual(goal.pinnedEvidence, []);
+  assert.deepEqual(goal.roleCheckpoints, []);
   assert.deepEqual(goal.iterations, []);
+});
+
+test("appendGoalRoleCheckpoint keeps bounded role failure history", () => {
+  const goal = { id: "g1", roleCheckpoints: [{ role: "observer", status: "completed" }] };
+  const checkpointed = appendGoalRoleCheckpoint(goal, { role: "worker", status: "failed" }, 1);
+  assert.deepEqual(checkpointed.roleCheckpoints, [{ role: "worker", status: "failed" }]);
 });
 
 test("normalizeCriteriaInputs allocates ids and requires passed evidence", () => {
@@ -141,6 +149,7 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
     doctrine: ["doctrine"],
     evidence: ["evidence"],
     pinnedEvidence: ["pinned evidence"],
+    roleCheckpoints: [{ iteration: 2, role: "observer", status: "completed", timestamp: "r" }],
     reviews: [{ timestamp: "t", verdict: "not_ready", findings: ["gap"], unresolvedGaps: ["gap"], evidenceSummary: "checked" }],
     notes: [{ timestamp: "n", text: "note" }],
     iterations: [{ step: 1 }],
@@ -161,6 +170,7 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
   assert.deepEqual(packet.state.doctrine, ["doctrine"]);
   assert.deepEqual(packet.state.evidence, ["evidence"]);
   assert.deepEqual(packet.state.pinnedEvidence, ["pinned evidence"]);
+  assert.deepEqual(packet.state.roleCheckpoints, [{ iteration: 2, role: "observer", status: "completed", timestamp: "r" }]);
   assert.equal(packet.state.latestReview.verdict, "not_ready");
   assert.equal(packet.scaffold.id, "default");
   assert.equal(packet.scaffold.body, "Do work");

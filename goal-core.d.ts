@@ -1,4 +1,5 @@
-export function normalizeGoal<T extends Record<string, unknown>>(goal: T): T & { iterations: unknown[] };
+export function normalizeGoal<T extends Record<string, unknown>>(goal: T): T & { iterations: unknown[]; roleCheckpoints: unknown[] };
+export function appendGoalRoleCheckpoint<T extends Record<string, unknown>>(goal: T, checkpoint: unknown, maxItems?: number): T & { roleCheckpoints: unknown[] };
 export function nextCriterionId(existing?: Array<{ id: string }>): string;
 export function normalizeCriteriaInputs(inputs: unknown[], existing?: Array<{ id: string }>): unknown[];
 export function appendUniqueStrings(existing?: unknown[], incoming?: unknown[], maxItems?: number): string[];
