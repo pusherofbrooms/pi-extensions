@@ -1,3 +1,4 @@
+export function isTerminalGoal(goal: unknown): boolean;
 export function normalizeGoal<T extends Record<string, unknown>>(goal: T): T & { iterations: unknown[]; roleCheckpoints: unknown[] };
 export function appendGoalRoleCheckpoint<T extends Record<string, unknown>>(goal: T, checkpoint: unknown, maxItems?: number): T & { roleCheckpoints: unknown[] };
 export function nextCriterionId(existing?: Array<{ id: string }>): string;

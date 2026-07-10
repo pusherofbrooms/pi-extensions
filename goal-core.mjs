@@ -1,3 +1,7 @@
+export function isTerminalGoal(goal) {
+  return goal?.status === "complete" || goal?.status === "cleared";
+}
+
 export function normalizeGoal(goal) {
   return {
     ...goal,

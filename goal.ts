@@ -6,7 +6,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
 import { runAgentSession } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
-import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, formatEvidenceRefs, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
+import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, formatEvidenceRefs, isTerminalGoal, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -1163,16 +1163,28 @@ export default function goalExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "get_goal",
     label: "Get Goal",
-    description: "Read the current autonomous goal state, including criteria, evidence, reviews, blockers, and notes. Always use this first when continuing goal work.",
-    promptSnippet: "Read the current autonomous goal objective, lifecycle status, success criteria, evidence, reviews, blockers, progress notes, checklist, and next action.",
+    description: "Read the current autonomous goal state when explicitly working on an active, blocked, or paused goal. Terminal goals return a short no-active-goal response.",
+    promptSnippet: "Read the current active goal objective, lifecycle status, success criteria, evidence, reviews, blockers, progress notes, checklist, and next action.",
     promptGuidelines: [
-      "Use get_goal first on autonomous goal continuation turns before choosing work.",
+      "Use get_goal only for explicit goal-related work or autonomous goal continuation turns; do not call it for unrelated repository conversations.",
+      "If the response begins with NO_ACTIVE_GOAL, do not treat the terminal goal as current working context unless the user explicitly asks about its history.",
       "When a goal mentions phases, passes, milestones, or numbered steps, treat them as separate autonomous iterations unless the user explicitly says to do them all in one turn.",
     ],
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const goal = await reloadRuntime(ctx);
-      if (!goal) return { content: [{ type: "text", text: "No current goal found." }], details: { active: false } };
+      if (!goal) return { content: [{ type: "text", text: "NO_ACTIVE_GOAL\nNo goal is currently recorded for this project." }], details: { active: false, found: false } };
+      if (isTerminalGoal(goal)) {
+        return {
+          content: [{ type: "text", text: `NO_ACTIVE_GOAL\nThe last goal is ${goal.status}; no active goal is available.` }],
+          details: {
+            active: false,
+            terminal: true,
+            lastGoal: { id: goal.id, status: goal.status, objective: goal.objective, updatedAt: goal.updatedAt },
+            path: goalPath(goal.id),
+          },
+        };
+      }
       return {
         content: [{ type: "text", text: renderGoalForModel(goal) }],
         details: { active: goal.status === "active", goal: goalForModel(goal), path: goalPath(goal.id) },

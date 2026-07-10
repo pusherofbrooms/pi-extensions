@@ -9,6 +9,7 @@ import {
   blockedStatusFromReport,
   buildGoalContextPacket,
   completionReadiness,
+  isTerminalGoal,
   latestTerminalReview,
   mergeCriteria,
   normalizeCriteriaInputs,
@@ -57,6 +58,14 @@ function workerReport(overrides = {}) {
 }
 
 const provenAssessment = (id = "CRIT-001") => ({ id, status: "proven", reason: "Criterion evidence was verified.", evidence: [evidence("observation", `criterion ${id}`)] });
+
+test("terminal goal lookup states are distinguished from resumable goals", () => {
+  assert.equal(isTerminalGoal({ status: "complete" }), true);
+  assert.equal(isTerminalGoal({ status: "cleared" }), true);
+  assert.equal(isTerminalGoal({ status: "active" }), false);
+  assert.equal(isTerminalGoal({ status: "blocked" }), false);
+  assert.equal(isTerminalGoal({ status: "paused" }), false);
+});
 
 test("normalizeGoal adds new goal fields for old stored goals", () => {
   const goal = normalizeGoal({ id: "g1", status: "active" });
