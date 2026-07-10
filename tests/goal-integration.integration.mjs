@@ -63,7 +63,27 @@ function memoryDeps(reports, { now = "2026-01-01T00:00:00.000Z" } = {}) {
   };
 }
 
-const { runDelegatedContinuation } = await import("../goal.ts");
+const testHome = await mkdtemp(join(tmpdir(), "goal-integration-home-"));
+process.env.HOME = testHome;
+const { default: goalExtension, runDelegatedContinuation } = await import("../goal.ts");
+
+async function seedCurrentGoal(cwd, goal) {
+  const store = join(testHome, ".pi", "agent", "goals");
+  await mkdir(join(store, "goals"), { recursive: true });
+  await writeFile(join(store, "index.json"), JSON.stringify({ version: 1, byCwd: { [cwd]: goal.id } }));
+  await writeFile(join(store, "goals", `${goal.id}.json`), JSON.stringify(goal));
+}
+
+function registeredTools() {
+  const tools = new Map();
+  const pi = {
+    registerCommand() {},
+    registerTool(tool) { tools.set(tool.name, tool); },
+    on() {},
+  };
+  goalExtension(pi);
+  return tools;
+}
 
 test("worker continuation persists checkpoints, iteration, and session reference", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "goal-integration-"));
@@ -194,6 +214,45 @@ test("failed worker execution preserves a failed checkpoint and session referenc
   assert.equal(saved.roleCheckpoints.at(-1).role, "worker");
   assert.equal(saved.roleCheckpoints.at(-1).status, "failed");
   assert.equal(saved.roleCheckpoints.at(-1).sessionFile, "fake-session-1.json");
+});
+
+test("get_goal returns active state but suppresses terminal history", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "goal-integration-lookup-"));
+  const active = {
+    id: "lookup-active",
+    version: 1,
+    cwd,
+    status: "active",
+    objective: "Current objective",
+    stepCount: 2,
+    summary: "Current summary",
+    checklist: [],
+    criteria: [],
+    reviews: [],
+    notes: [],
+    nextAction: "Continue",
+  };
+  await seedCurrentGoal(cwd, active);
+  const getGoal = registeredTools().get("get_goal");
+  const activeResult = await getGoal.execute("lookup-active", {}, undefined, undefined, {
+    cwd,
+    hasUI: false,
+    ui: { setStatus() {} },
+  });
+  assert.equal(activeResult.details.active, true);
+  assert.match(activeResult.content[0].text, /Current objective/);
+
+  const complete = { ...active, id: "lookup-complete", status: "complete", updatedAt: "2026-01-01T00:00:00.000Z" };
+  await seedCurrentGoal(cwd, complete);
+  const terminalResult = await getGoal.execute("lookup-complete", {}, undefined, undefined, {
+    cwd,
+    hasUI: false,
+    ui: { setStatus() {} },
+  });
+  assert.equal(terminalResult.details.active, false);
+  assert.equal(terminalResult.details.terminal, true);
+  assert.match(terminalResult.content[0].text, /^NO_ACTIVE_GOAL/);
+  assert.doesNotMatch(terminalResult.content[0].text, /Current objective/);
 });
 
 test("scheduled strategic review is recorded without completing the goal", async () => {
