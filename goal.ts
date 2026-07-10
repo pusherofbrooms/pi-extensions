@@ -3,6 +3,7 @@ import {
   type ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
+import { UserMessageComponent } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { runAgentSession, type RunAgentSessionOptions } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
@@ -1012,10 +1013,16 @@ get_goal, goal_inspect_session, goal_note, goal_criteria, goal_criterion_update,
 }
 
 export default function goalExtension(pi: ExtensionAPI) {
+  pi.registerEntryRenderer("goal-command", (entry) => new UserMessageComponent(entry.data?.text ?? ""));
+
   pi.registerCommand("goal", {
     description: "Set, inspect, pause, resume, clear, or complete a tool-backed autonomous goal.",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
+      const commandText = `/goal${trimmed ? ` ${trimmed}` : ""}`;
+      if (!checkNoSecrets(commandText, "Goal command")) {
+        pi.appendEntry("goal-command", { text: commandText });
+      }
       const subcommand = trimmed.split(/\s+/, 1)[0]?.toLowerCase();
 
       if (!trimmed || subcommand === "status") {

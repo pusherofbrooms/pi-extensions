@@ -74,15 +74,20 @@ async function seedCurrentGoal(cwd, goal) {
   await writeFile(join(store, "goals", `${goal.id}.json`), JSON.stringify(goal));
 }
 
-function registeredTools() {
+function registeredExtension() {
   const tools = new Map();
+  const commands = new Map();
+  const entries = new Map();
+  const appendedEntries = [];
   const pi = {
-    registerCommand() {},
+    registerCommand(name, command) { commands.set(name, command); },
     registerTool(tool) { tools.set(tool.name, tool); },
+    registerEntryRenderer(name, renderer) { entries.set(name, renderer); },
+    appendEntry(type, data) { appendedEntries.push({ type, data }); },
     on() {},
   };
   goalExtension(pi);
-  return tools;
+  return { tools, commands, entries, appendedEntries };
 }
 
 test("worker continuation persists checkpoints, iteration, and session reference", async () => {
@@ -233,7 +238,11 @@ test("get_goal returns active state but suppresses terminal history", async () =
     nextAction: "Continue",
   };
   await seedCurrentGoal(cwd, active);
-  const getGoal = registeredTools().get("get_goal");
+  const extension = registeredExtension();
+  const getGoal = extension.tools.get("get_goal");
+  await extension.commands.get("goal").handler("status", context(cwd));
+  assert.deepEqual(extension.appendedEntries[0], { type: "goal-command", data: { text: "/goal status" } });
+  assert.equal(extension.entries.get("goal-command")({ data: { text: "/goal status" } }).text, "/goal status");
   const activeResult = await getGoal.execute("lookup-active", {}, undefined, undefined, {
     cwd,
     hasUI: false,

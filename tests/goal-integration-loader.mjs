@@ -1,5 +1,5 @@
 const stubs = new Map([
-  ["@mariozechner/pi-coding-agent", `export const __testStub = true;`],
+  ["@mariozechner/pi-coding-agent", `export class UserMessageComponent { constructor(text) { this.text = text; } }`],
   ["@mariozechner/pi-ai", `export function StringEnum(values) { return { values }; }`],
   ["typebox", `
     const make = (name) => (...args) => ({ name, args });
