@@ -914,7 +914,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
     roles: sessionRefs.map((ref) => ref.role),
     outcome: report.outcome,
     summary: report.summary,
-    evidence: evidenceText([...(observerReport?.evidence ?? []), ...(researcherReport?.evidence ?? []), ...(report.evidence ?? [])]),
+    evidence: evidenceText([...(observerRun?.report.evidence ?? []), ...(researcherRun?.report.evidence ?? []), ...(report.evidence ?? [])]),
     nextAction: reviewedReport.nextAction,
     sessionRefs,
   });
@@ -934,7 +934,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
         ? `Delegated worker proposed completion, but parent verification says not ready.\n\n${parentReview.commentary ?? parentReview.summary}\n\nGaps:\n${(parentReview.unresolvedGaps ?? []).map((item) => `- ${item}`).join("\n")}`
         : `Delegated worker thinks goal may be complete, but workflow '${workflowPlan.workflow}' does not run parent review automatically.`
       : `Delegated goal step ${nextStep}: ${report.outcome}\n${report.summary}`;
-  pi.sendMessage({ customType: "goal-delegated-step", content: message, display: true, details: { observerReport, researcherReport, report, parentReview, goal: goalForModel(updated), path: goalPath(updated.id) } });
+  pi.sendMessage({ customType: "goal-delegated-step", content: message, display: true, details: { observerReport: observerRun?.report, researcherReport: researcherRun?.report, report, parentReview, goal: goalForModel(updated), path: goalPath(updated.id) } });
 
   if (completed) return;
   if (reachedCap && updated.status === "paused") {

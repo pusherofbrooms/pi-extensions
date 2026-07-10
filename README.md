@@ -170,7 +170,13 @@ Current tests:
 
 Recommended test strategy for extensions:
 1. **Unit tests** for pure logic (regex/policy decision code).
-2. **Targeted smoke tests** in a real `pi` session for event-hook behavior.
+2. **Mocked integration tests** for `/goal` orchestration without LLM calls:
+   ```bash
+   nix develop --command node --experimental-strip-types \
+     --experimental-loader ./tests/goal-integration-loader.mjs \
+     --test tests/goal-integration.integration.mjs
+   ```
+3. **Targeted smoke tests** in a real `pi` session for event-hook behavior.
 
 ## Notes
 - Keep secrets out of this repo.
