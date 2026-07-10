@@ -21,7 +21,7 @@ This keeps your own `~/.pi/agent/extensions` directory clean and lets these exte
 ## Updating
 
 ```bash
-pi update
+pi update git:github.com/pusherofbrooms/pi-extensions
 ```
 
 ## Uninstall
