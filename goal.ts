@@ -7,7 +7,7 @@ import { UserMessageComponent } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { runAgentSession, type RunAgentSessionOptions } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
-import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, formatEvidenceRefs, isTerminalGoal, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
+import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, currentGoalPhase, formatEvidenceRefs, isTerminalGoal, nextGoalPhase, normalizeCriteriaInputs, normalizeGoal, normalizePhases, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -38,13 +38,24 @@ type GoalCriterion = {
   text: string;
   status: GoalCriterionStatus;
   evidence?: string;
+  phaseId?: string;
+};
+
+type GoalPhase = {
+  id: string;
+  title: string;
+  objective: string;
+  status: "pending" | "active" | "passed" | "blocked";
+  criterionIds: string[];
+  scaffold?: string;
+  nextAction?: string;
 };
 
 type GoalReviewVerdict = "ready_to_complete" | "not_ready" | "blocked";
 
 type GoalReview = {
   timestamp: string;
-  kind?: "terminal" | "strategic";
+  kind?: "terminal" | "strategic" | "phase_gate";
   verdict: GoalReviewVerdict;
   findings: string[];
   unresolvedGaps?: string[];
@@ -112,6 +123,7 @@ type GoalAgentReport = {
     text?: string;
     status?: GoalCriterionStatus;
     evidence?: GoalEvidenceRef[];
+    phaseId?: string;
   }[];
   blocker?: { reason: string; needed: string; evidence: GoalEvidenceRef[] };
   wait?: { condition: string; resumeTrigger: string };
@@ -121,6 +133,7 @@ type GoalAgentReport = {
   findings?: string[];
   unresolvedGaps?: string[];
   criteriaAssessment?: { id: string; status: "proven" | "not_proven" | "contradicted" | "missing_evidence"; reason: string; evidence?: GoalEvidenceRef[] }[];
+  phaseTransition?: { toPhaseId: string; evidence?: GoalEvidenceRef[] };
   scopeConcerns?: string[];
   openQuestions?: string[];
   recommendedDoctrine?: string[];
@@ -164,6 +177,8 @@ type StoredGoal = {
   summary: string;
   checklist: GoalChecklistItem[];
   criteria?: GoalCriterion[];
+  phases?: GoalPhase[];
+  currentPhaseId?: string;
   reviews?: GoalReview[];
   facts?: string[];
   assumptions?: string[];
@@ -458,8 +473,11 @@ function renderGoalForModel(goal: StoredGoal): string {
   const notes = goal.notes.length
     ? goal.notes.slice(-8).map((note) => `- ${note.timestamp}: ${note.text}`).join("\n")
     : "- No notes recorded yet.";
+  const phases = goal.phases?.length
+    ? goal.phases.map((phase) => `${phase.id} [${phase.status}] ${phase.title}${phase.id === goal.currentPhaseId ? " (CURRENT)" : ""}${phase.objective ? ` — ${phase.objective}` : ""}`).join("\n")
+    : "- No phases defined.";
 
-  return `${goalSummary(goal)}\n\nSuccess criteria:\n${criteria}\n\n${structured}\n\nChecklist:\n${checklist}\n\nLatest review:\n${reviewText}\n\nRecent notes:\n${notes}`;
+  return `${goalSummary(goal)}\n\nCurrent phase:\n${goal.currentPhaseId ?? "none"}\n\nPhases:\n${phases}\n\nSuccess criteria:\n${criteria}\n\n${structured}\n\nChecklist:\n${checklist}\n\nLatest review:\n${reviewText}\n\nRecent notes:\n${notes}`;
 }
 
 function updateStatus(ctx: ExtensionContext, goal?: StoredGoal): void {
@@ -509,6 +527,7 @@ function checkReportForSecrets(report: GoalAgentReport): string | undefined {
     ...(report.actions ?? []).flatMap((item) => item.evidence ?? []),
     ...(report.criteriaUpdates ?? []).flatMap((item) => item.evidence ?? []),
     ...(report.criteriaAssessment ?? []).flatMap((item) => item.evidence ?? []),
+    ...(report.phaseTransition?.evidence ?? []),
   ];
   const texts = [
     report.summary,
@@ -524,7 +543,8 @@ function checkReportForSecrets(report: GoalAgentReport): string | undefined {
     ...(report.proposedState?.risksToAdd ?? []),
     ...(report.proposedState?.blockersToAdd ?? []),
     ...(report.proposedState?.checklist ?? []).flatMap((item) => [item.text, item.evidence]),
-    ...(report.criteriaUpdates ?? []).flatMap((item) => [item.id, item.text]),
+    ...(report.criteriaUpdates ?? []).flatMap((item) => [item.id, item.text, item.phaseId]),
+    ...(report.phaseTransition ? [report.phaseTransition.toPhaseId] : []),
     ...(report.findings ?? []),
     ...(report.unresolvedGaps ?? []),
     ...(report.scopeConcerns ?? []),
@@ -558,7 +578,8 @@ function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan 
       lifecycleAuthority: "orchestrator",
     },
   });
-  return `Execute the next delegated continuation for this autonomous goal.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: ${workflowPlan.roles.join(" -> ")}\n- worker action: ${requestedAction}\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nTurn contract:\n- Follow the selected workflow plan. If prior role reports are present in the context packet, use them as current-state input and avoid repeating their inspection unless verification is needed.\n- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteriaUpdates with operation=add before or alongside substantive progress.\n- If you think the goal is done, set outcome to ready_for_review and include concrete evidence.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked, ready_for_review.\n{\n  "schemaVersion": 1,\n  "role": "worker",\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "confidence": "medium",\n  "actions": [{ "summary": "what you did", "evidence": [{ "kind": "file", "ref": "path", "status": "modified", "summary": "what changed" }] }],\n  "evidence": [{ "kind": "command", "ref": "command run", "status": "passed", "summary": "result" }],\n  "proposedState": {\n    "factsToAdd": ["durable facts"],\n    "assumptionsToAdd": ["assumptions"],\n    "risksToAdd": ["risks"],\n    "blockersToAdd": ["non-terminal blockers/concerns"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "created", "summary": "evidence" }],\n    "checklist": [{ "text": "item", "done": true, "evidence": "brief proof" }]\n  },\n  "criteriaUpdates": [{ "operation": "add", "text": "success criterion", "status": "pending", "evidence": [] }],\n  "blocker": { "reason": "required for blocked", "needed": "what external/user action is needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "next concrete action unless blocked, waiting, or ready_for_review"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `Execute the next delegated continuation for this autonomous goal.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: ${workflowPlan.roles.join(" -> ")}\n- worker action: ${requestedAction}\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nTurn contract:\n- Follow the selected workflow plan. If prior role reports are present in the context packet, use them as current-state input and avoid repeating their inspection unless verification is needed.\n- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.
+- Work only within the current phase shown in the context packet; do not begin a later phase early.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteriaUpdates with operation=add before or alongside substantive progress.\n- If you think the current phase is complete, set outcome to ready_for_review and include concrete evidence; the parent will decide whether this is a phase gate or final completion.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked, ready_for_review.\n{\n  "schemaVersion": 1,\n  "role": "worker",\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "confidence": "medium",\n  "actions": [{ "summary": "what you did", "evidence": [{ "kind": "file", "ref": "path", "status": "modified", "summary": "what changed" }] }],\n  "evidence": [{ "kind": "command", "ref": "command run", "status": "passed", "summary": "result" }],\n  "proposedState": {\n    "factsToAdd": ["durable facts"],\n    "assumptionsToAdd": ["assumptions"],\n    "risksToAdd": ["risks"],\n    "blockersToAdd": ["non-terminal blockers/concerns"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "created", "summary": "evidence" }],\n    "checklist": [{ "text": "item", "done": true, "evidence": "brief proof" }]\n  },\n  "criteriaUpdates": [{ "operation": "add", "text": "success criterion", "status": "pending", "evidence": [] }],\n  "blocker": { "reason": "required for blocked", "needed": "what external/user action is needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "next concrete action unless blocked, waiting, or ready_for_review"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
 function observerPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan = selectGoalWorkflowPlan(scaffold)): string {
@@ -732,7 +753,9 @@ function parentReviewPrompt(goal: StoredGoal, workerReport: GoalAgentReport, sca
       lifecycleAuthority: "orchestrator",
     },
   });
-  return `A delegated goal worker believes this autonomous goal is ready for review. Perform a concise parent-side verification pass.\n\nContext packet after worker report (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nWorker report:\n${JSON.stringify(workerReport, null, 2)}\n\nVerification contract:\n- Compare the objective, criteria, evidence, checklist, and worker report.\n- Inspect files or run lightweight commands only if needed to verify concrete claims.\n- Do not modify files.\n- Return not_ready if required evidence is missing, criteria are not actually satisfied, or verification is uncertain.\n- Assess every current criterion exactly once in criteriaAssessment; use the criterion ids from the context packet.\n- Return ready_to_complete only if the goal is genuinely done and each criterion assessment is proven with concrete evidence.\n- Include brief commentary suitable to show the user when the goal completes or needs more work.\n\nReturn only valid JSON using schemaVersion 1. Use role=reviewer and outcome=review_complete.\n{\n  "schemaVersion": 1,\n  "role": "reviewer",\n  "outcome": "review_complete",\n  "summary": "concise review result",\n  "confidence": "medium",\n  "actions": [{ "summary": "verification performed" }],\n  "evidence": [{ "kind": "observation", "ref": "goal state", "status": "observed", "summary": "what proves the verdict" }],\n  "verdict": "ready_to_complete",\n  "commentary": "brief user-facing parent commentary",\n  "findings": ["..."],\n  "criteriaAssessment": [{ "id": "CRIT-001", "status": "proven", "reason": "why", "evidence": [{ "kind": "test", "ref": "command", "status": "passed", "summary": "proof" }] }],\n  "unresolvedGaps": ["required unless ready_to_complete"],\n  "scopeConcerns": []\n}\n\nOmit unresolvedGaps when ready_to_complete. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  const phaseGate = Boolean(nextGoalPhase(goalForModel(goal)));
+  return `A delegated goal worker believes the current ${phaseGate ? "phase" : "goal"} is ready for review. Perform a concise parent-side verification pass.\n\nContext packet after worker report (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nWorker report:\n${JSON.stringify(workerReport, null, 2)}\n\nVerification contract:\n- Compare the objective, criteria, evidence, checklist, and worker report.\n- Inspect files or run lightweight commands only if needed to verify concrete claims.\n- Do not modify files.\n- Return not_ready if required evidence is missing, criteria are not actually satisfied, or verification is uncertain.\n- Assess every current criterion exactly once in criteriaAssessment; use the criterion ids from the context packet.\n- Return ${phaseGate ? "ready_to_complete only when the current phase is proven complete, include phaseTransition.toPhaseId for the immediate next phase, and do not complete the overall goal" : "ready_to_complete only if the goal is genuinely done and each criterion assessment is proven with concrete evidence"}.\n- Include brief commentary suitable to show the user when the goal completes or needs more work.\n\nReturn only valid JSON using schemaVersion 1. Use role=reviewer and outcome=review_complete.\n{\n  "schemaVersion": 1,\n  "role": "reviewer",\n  "outcome": "review_complete",\n  "summary": "concise review result",\n  "confidence": "medium",\n  "actions": [{ "summary": "verification performed" }],\n  "evidence": [{ "kind": "observation", "ref": "goal state", "status": "observed", "summary": "what proves the verdict" }],\n  "verdict": "ready_to_complete",\n  "commentary": "brief user-facing parent commentary",\n  "findings": ["..."],\n  "criteriaAssessment": [{ "id": "CRIT-001", "status": "proven", "reason": "why", "evidence": [{ "kind": "test", "ref": "command", "status": "passed", "summary": "proof" }] }],
+  "phaseTransition": { "toPhaseId": "next phase id", "evidence": [{ "kind": "observation", "ref": "phase gate", "status": "passed", "summary": "proof" }] },\n  "unresolvedGaps": ["required unless ready_to_complete"],\n  "scopeConcerns": []\n}\n\nOmit unresolvedGaps when ready_to_complete. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
 async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, scaffold: GoalScaffold, ctx: ExtensionContext, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
@@ -758,7 +781,8 @@ function applyDelegatedReport(goal: StoredGoal, report: GoalAgentReport, scaffol
 
 export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<void> {
   if (ctx.hasUI) ctx.ui.notify(`Running delegated goal step ${goal.stepCount + 1}...`, "info");
-  const scaffold = await loadScaffold(ctx.cwd, goal.scaffold ?? "default");
+  const phase = currentGoalPhase(goal);
+  const scaffold = await loadScaffold(ctx.cwd, phase?.scaffold ?? goal.scaffold ?? "default");
   const workflowPlan = selectGoalWorkflowPlan(scaffold);
 
   if (scheduledReviewDue(goal)) {
@@ -875,7 +899,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
       parentReview = parentReviewRun.report;
       parentReviewSessionFile = parentReviewRun.sessionFile;
       reviewedReport = await checkpointRole(
-        applyGoalReviewerReport(afterReport, parentReview) as StoredGoal,
+        applyGoalReviewerReport(afterReport, parentReview, { reviewKind: nextGoalPhase(afterReport) ? "phase_gate" : "terminal" }) as StoredGoal,
         "reviewer",
         "completed",
         { summary: parentReview.summary, evidence: evidenceText(parentReview.evidence), sessionFile: parentReviewSessionFile },
@@ -1426,6 +1450,50 @@ export default function goalExtension(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "goal_phases",
+    label: "Goal Phases",
+    description: "Create or replace ordered phase gates for the current goal. Only the current phase is actionable; the orchestrator advances phases after reviewer verification.",
+    promptSnippet: "Define ordered, evidence-gated phases for a long-running goal.",
+    parameters: Type.Object({
+      phases: Type.Array(Type.Object({
+        id: Type.String(),
+        title: Type.String(),
+        objective: Type.String(),
+        status: Type.Optional(StringEnum(["pending", "active", "passed", "blocked"] as const)),
+        criterionIds: Type.Optional(Type.Array(Type.String())),
+        scaffold: Type.Optional(Type.String()),
+        nextAction: Type.Optional(Type.String()),
+      })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const secretError = params.phases.map((phase) => [phase.id, phase.title, phase.objective, phase.scaffold, phase.nextAction].map((item) => checkNoSecrets(item, "phase")).find(Boolean)).find(Boolean);
+      if (secretError) throw new Error(`Refusing to store goal phases: ${secretError}.`);
+      const normalizedPhases = normalizePhases(params.phases);
+      const ids = new Set();
+      for (const phase of normalizedPhases) {
+        if (ids.has(phase.id)) throw new Error(`Duplicate phase id: ${phase.id}`);
+        ids.add(phase.id);
+      }
+      const goal = await mutateCurrentGoal(ctx.cwd, (current) => {
+        const criterionIds = new Set((current.criteria ?? []).map((criterion) => criterion.id));
+        const unknown = normalizedPhases.flatMap((phase) => phase.criterionIds).find((id) => !criterionIds.has(id));
+        if (unknown) throw new Error(`Phase references unknown criterion: ${unknown}`);
+        const firstOpen = normalizedPhases.find((phase) => phase.status !== "passed");
+        const phases = normalizedPhases.map((phase) => phase.id === (firstOpen?.id ?? phase.id) && phase.status === "pending" ? { ...phase, status: "active" } : phase);
+        return {
+          ...current,
+          phases,
+          currentPhaseId: phases.find((phase) => phase.status === "active")?.id ?? phases[0]?.id,
+          notes: [...current.notes, { timestamp: nowIso(), text: `Goal phases replaced (${phases.length} phase${phases.length === 1 ? "" : "s"}).` }].slice(-50),
+        };
+      });
+      updateStatus(ctx, goal);
+      if (!goal) return { content: [{ type: "text", text: "No current goal found." }], details: { updated: false } };
+      return { content: [{ type: "text", text: "Goal phases updated." }], details: { updated: true, goal: goalForModel(goal), path: goalPath(goal.id) } };
+    },
+  });
+
+  pi.registerTool({
     name: "goal_criteria",
     label: "Goal Criteria",
     description: "Create or replace evidence-bearing success criteria for the current goal.",
@@ -1436,10 +1504,11 @@ export default function goalExtension(pi: ExtensionAPI) {
         text: Type.String(),
         status: Type.Optional(StringEnum(["pending", "passed", "failed"] as const)),
         evidence: Type.Optional(Type.String()),
+        phaseId: Type.Optional(Type.String()),
       })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const secretError = params.criteria.map((item) => checkNoSecrets(item.id, "criterion id") ?? checkNoSecrets(item.text, "criterion text") ?? checkNoSecrets(item.evidence, "criterion evidence")).find(Boolean);
+      const secretError = params.criteria.map((item) => checkNoSecrets(item.id, "criterion id") ?? checkNoSecrets(item.text, "criterion text") ?? checkNoSecrets(item.evidence, "criterion evidence") ?? checkNoSecrets(item.phaseId, "criterion phase id")).find(Boolean);
       if (secretError) throw new Error(`Refusing to store goal criteria: ${secretError}.`);
       const normalizedCriteria = normalizeCriteriaInputs(params.criteria);
       const goal = await mutateCurrentGoal(ctx.cwd, (current) => ({
@@ -1499,6 +1568,15 @@ export default function goalExtension(pi: ExtensionAPI) {
         status: Type.Optional(StringEnum(["passed", "failed", "observed", "created", "modified", "not_run"] as const)),
         summary: Type.String(),
       }))),
+      phaseTransition: Type.Optional(Type.Object({
+        toPhaseId: Type.String(),
+        evidence: Type.Optional(Type.Array(Type.Object({
+          kind: StringEnum(["command", "file", "test", "url", "session", "observation", "artifact"] as const),
+          ref: Type.String(),
+          status: Type.Optional(StringEnum(["passed", "failed", "observed", "created", "modified", "not_run"] as const)),
+          summary: Type.String(),
+        }))),
+      })),
       criteriaAssessment: Type.Optional(Type.Array(Type.Object({
         id: Type.String(),
         status: StringEnum(["proven", "not_proven", "contradicted", "missing_evidence"] as const),
@@ -1524,12 +1602,13 @@ export default function goalExtension(pi: ExtensionAPI) {
         findings: params.findings,
         unresolvedGaps: params.unresolvedGaps,
         criteriaAssessment: params.criteriaAssessment ?? [],
+        phaseTransition: params.phaseTransition,
       };
       validateGoalAgentReport(report);
       const secretError = checkReportForSecrets(report);
       if (secretError) throw new Error(`Refusing to store goal review: ${secretError}.`);
       const goal = await mutateCurrentGoal(ctx.cwd, (current) => {
-        const reviewed = applyGoalReviewerReport(current, report, { now: nowIso() }) as StoredGoal;
+        const reviewed = applyGoalReviewerReport(current, report, { now: nowIso(), reviewKind: params.phaseTransition ? "phase_gate" : "terminal" }) as StoredGoal;
         return {
           ...reviewed,
           // Manual review records readiness; update_goal remains the explicit completion command.

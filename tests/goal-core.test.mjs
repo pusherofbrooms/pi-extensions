@@ -9,10 +9,13 @@ import {
   blockedStatusFromReport,
   buildGoalContextPacket,
   completionReadiness,
+  currentGoalPhase,
   isTerminalGoal,
   latestTerminalReview,
   mergeCriteria,
+  nextGoalPhase,
   normalizeCriteriaInputs,
+  normalizePhases,
   normalizeGoal,
   recommendScaffoldId,
   selectGoalWorkflowPlan,
@@ -65,6 +68,20 @@ test("terminal goal lookup states are distinguished from resumable goals", () =>
   assert.equal(isTerminalGoal({ status: "active" }), false);
   assert.equal(isTerminalGoal({ status: "blocked" }), false);
   assert.equal(isTerminalGoal({ status: "paused" }), false);
+});
+
+test("phase normalization selects the active phase and next phase", () => {
+  const goal = normalizeGoal({
+    status: "active",
+    phases: [
+      { id: "plan", title: "Plan", status: "pending" },
+      { id: "run", title: "Run", status: "active" },
+    ],
+  });
+  assert.equal(goal.currentPhaseId, "run");
+  assert.equal(currentGoalPhase(goal).id, "run");
+  assert.equal(nextGoalPhase(goal), null);
+  assert.equal(normalizePhases([{ title: "First" }])[0].id, "PHASE-001");
 });
 
 test("normalizeGoal adds new goal fields for old stored goals", () => {
@@ -347,6 +364,51 @@ test("worker ready_for_review records readiness but does not complete goal by it
   assert.equal(merged.reviews.at(-1).verdict, "ready_to_complete");
   assert.equal(merged.nextAction, "Parent should verify readiness and complete the goal if evidence is sufficient.");
   assert.equal(completionReadiness(merged).ready, false);
+});
+
+test("phase-gate reviewer advances only the immediate next phase", () => {
+  const goal = baseGoal({
+    criteria: [
+      { id: "CRIT-001", text: "Plan complete", status: "passed", evidence: "plan proof" },
+      { id: "CRIT-002", text: "Run complete", status: "pending" },
+    ],
+    phases: [
+      { id: "plan", title: "Plan", objective: "Plan", status: "active", criterionIds: ["CRIT-001"] },
+      { id: "run", title: "Run", objective: "Run", status: "pending", criterionIds: ["CRIT-002"] },
+    ],
+    currentPhaseId: "plan",
+  });
+  const advanced = applyGoalReviewerReport(goal, {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Plan gate passed.",
+    confidence: "high",
+    actions: [{ summary: "Reviewed plan." }],
+    evidence: [evidence("observation", "plan gate")],
+    verdict: "ready_to_complete",
+    findings: ["Planning phase is complete."],
+    criteriaAssessment: [provenAssessment("CRIT-001")],
+    phaseTransition: { toPhaseId: "run", evidence: [evidence("observation", "transition")] },
+  }, { reviewKind: "phase_gate" });
+  assert.equal(advanced.status, "active");
+  assert.equal(advanced.currentPhaseId, "run");
+  assert.equal(advanced.phases[0].status, "passed");
+  assert.equal(advanced.phases[1].status, "active");
+  assert.equal(advanced.reviews.at(-1).kind, "phase_gate");
+  assert.throws(() => applyGoalReviewerReport(goal, {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "Wrong transition.",
+    confidence: "high",
+    actions: [],
+    evidence: [evidence()],
+    verdict: "ready_to_complete",
+    findings: ["Wrong."],
+    criteriaAssessment: [provenAssessment("CRIT-001")],
+    phaseTransition: { toPhaseId: "plan" },
+  }, { reviewKind: "phase_gate" }), /immediate next phase/);
 });
 
 test("applyGoalReviewerReport records strategic reviews without completing", () => {

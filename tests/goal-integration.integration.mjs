@@ -156,6 +156,48 @@ test("observer report is checkpointed and handed to the worker", async () => {
   assert.deepEqual(writes.at(-1).iterations.at(-1).roles, ["observer", "worker"]);
 });
 
+test("worker readiness advances a reviewed phase without completing the goal", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "goal-integration-phase-"));
+  const worker = report("worker", "ready_for_review", { nextAction: undefined });
+  const reviewer = report("reviewer", "review_complete", {
+    verdict: "ready_to_complete",
+    findings: ["Planning phase is complete."],
+    criteriaAssessment: [{ id: "CRIT-PLAN", status: "proven", reason: "Plan verified.", evidence: [evidence("test", "plan")] }],
+    phaseTransition: { toPhaseId: "execute", evidence: [evidence("observation", "phase transition")] },
+    nextAction: undefined,
+  });
+  const { deps, writes } = memoryDeps([worker, reviewer]);
+  await runDelegatedContinuation(api(), context(cwd), {
+    id: "goal-phase",
+    version: 1,
+    cwd,
+    status: "active",
+    objective: "Plan then execute",
+    scaffold: "default",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    stepCount: 0,
+    maxIterations: 1,
+    summary: "Start",
+    checklist: [],
+    criteria: [{ id: "CRIT-PLAN", text: "Plan is ready", status: "passed", evidence: "plan proof" }, { id: "CRIT-EXEC", text: "Execution is ready", status: "pending" }],
+    phases: [
+      { id: "plan", title: "Plan", objective: "Plan", status: "active", criterionIds: ["CRIT-PLAN"] },
+      { id: "execute", title: "Execute", objective: "Execute", status: "pending", criterionIds: ["CRIT-EXEC"] },
+    ],
+    currentPhaseId: "plan",
+    reviews: [],
+    nextAction: "Plan",
+    notes: [],
+  }, deps);
+
+  const saved = writes.at(-1);
+  assert.equal(saved.status, "paused");
+  assert.equal(saved.currentPhaseId, "execute");
+  assert.deepEqual(saved.phases.map((phase) => phase.status), ["passed", "active"]);
+  assert.equal(saved.reviews.at(-1).kind, "phase_gate");
+});
+
 test("worker readiness requires a parent review before completion", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "goal-integration-review-"));
   const worker = report("worker", "ready_for_review", { nextAction: undefined });
@@ -219,6 +261,34 @@ test("failed worker execution preserves a failed checkpoint and session referenc
   assert.equal(saved.roleCheckpoints.at(-1).role, "worker");
   assert.equal(saved.roleCheckpoints.at(-1).status, "failed");
   assert.equal(saved.roleCheckpoints.at(-1).sessionFile, "fake-session-1.json");
+});
+
+test("goal_phases stores ordered phases and current phase", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "goal-integration-phases-tool-"));
+  const goal = {
+    id: "phases-tool",
+    version: 1,
+    cwd,
+    status: "active",
+    objective: "Plan and execute",
+    stepCount: 0,
+    summary: "Start",
+    checklist: [],
+    criteria: [],
+    reviews: [],
+    notes: [],
+    nextAction: "Plan",
+  };
+  await seedCurrentGoal(cwd, goal);
+  const extension = registeredExtension();
+  const result = await extension.tools.get("goal_phases").execute("phases-tool", {
+    phases: [
+      { id: "plan", title: "Plan", objective: "Prepare", criterionIds: [] },
+      { id: "execute", title: "Execute", objective: "Act", criterionIds: [] },
+    ],
+  }, undefined, undefined, context(cwd));
+  assert.equal(result.details.goal.currentPhaseId, "plan");
+  assert.deepEqual(result.details.goal.phases.map((phase) => phase.status), ["active", "pending"]);
 });
 
 test("get_goal returns active state but suppresses terminal history", async () => {

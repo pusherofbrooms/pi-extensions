@@ -1,5 +1,10 @@
 export function isTerminalGoal(goal: unknown): boolean;
-export function normalizeGoal<T extends Record<string, unknown>>(goal: T): T & { iterations: unknown[]; roleCheckpoints: unknown[] };
+export function normalizeGoal<T extends Record<string, unknown>>(goal: T): T & { iterations: unknown[]; roleCheckpoints: unknown[]; phases: unknown[]; currentPhaseId?: string };
+export function normalizePhases(phases?: unknown[]): unknown[];
+export function currentGoalPhase(goal: unknown): unknown;
+export function nextGoalPhase(goal: unknown, phaseId?: string): unknown;
+export function phaseCriterionIds(goal: unknown, phaseId?: string): string[];
+export function applyPhaseTransition(goal: unknown, toPhaseId: string): unknown;
 export function appendGoalRoleCheckpoint<T extends Record<string, unknown>>(goal: T, checkpoint: unknown, maxItems?: number): T & { roleCheckpoints: unknown[] };
 export function nextCriterionId(existing?: Array<{ id: string }>): string;
 export function normalizeCriteriaInputs(inputs: unknown[], existing?: Array<{ id: string }>): unknown[];
@@ -13,7 +18,7 @@ export function buildGoalContextPacket(goal: unknown, scaffold?: unknown, reques
 export function goalAgentReportEffectiveOutcome(report: unknown, policy?: Record<string, unknown>): unknown;
 export function criteriaInputsFromGoalAgentReport(report: unknown): { proposed: unknown[]; updates: unknown[] };
 export function applyGoalAgentReport(goal: unknown, report: unknown, scaffold?: unknown, options?: { now?: string }): unknown;
-export function applyGoalReviewerReport(goal: unknown, report: unknown, options?: { now?: string }): unknown;
+export function applyGoalReviewerReport(goal: unknown, report: unknown, options?: { now?: string; reviewKind?: string }): unknown;
 export function applyCriterionUpdates(criteria: unknown[], updates: unknown[]): unknown[];
 export function validateReview(review: unknown): void;
 export function completionReadiness(goal: unknown): { ready: boolean; missing: string[] };

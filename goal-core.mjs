@@ -3,10 +3,16 @@ export function isTerminalGoal(goal) {
 }
 
 export function normalizeGoal(goal) {
+  const phases = normalizePhases(goal.phases);
   return {
     ...goal,
     scaffold: typeof goal.scaffold === "string" && goal.scaffold.trim() ? goal.scaffold : "default",
     criteria: Array.isArray(goal.criteria) ? goal.criteria : [],
+    phases,
+    currentPhaseId: phases.some((phase) => phase.id === goal.currentPhaseId)
+      ? goal.currentPhaseId
+      : phases.find((phase) => phase.status === "active")?.id ?? phases[0]?.id,
+
     reviews: Array.isArray(goal.reviews) ? goal.reviews : [],
     facts: Array.isArray(goal.facts) ? goal.facts : [],
     assumptions: Array.isArray(goal.assumptions) ? goal.assumptions : [],
@@ -18,6 +24,55 @@ export function normalizeGoal(goal) {
     pinnedEvidence: Array.isArray(goal.pinnedEvidence) ? goal.pinnedEvidence : [],
     roleCheckpoints: Array.isArray(goal.roleCheckpoints) ? goal.roleCheckpoints : [],
     iterations: Array.isArray(goal.iterations) ? goal.iterations : [],
+  };
+}
+
+export function normalizePhases(phases = []) {
+  if (!Array.isArray(phases)) return [];
+  return phases.map((phase, index) => {
+    const id = typeof phase?.id === "string" && phase.id.trim() ? phase.id.trim() : `PHASE-${String(index + 1).padStart(3, "0")}`;
+    const status = ["pending", "active", "passed", "blocked"].includes(phase?.status) ? phase.status : index === 0 ? "active" : "pending";
+    return {
+      id,
+      title: typeof phase?.title === "string" && phase.title.trim() ? phase.title.trim() : id,
+      objective: typeof phase?.objective === "string" ? phase.objective.trim() : "",
+      status,
+      criterionIds: Array.isArray(phase?.criterionIds) ? phase.criterionIds.filter((item) => typeof item === "string" && item.trim()) : [],
+      scaffold: typeof phase?.scaffold === "string" && phase.scaffold.trim() ? phase.scaffold.trim() : undefined,
+      nextAction: typeof phase?.nextAction === "string" && phase.nextAction.trim() ? phase.nextAction.trim() : undefined,
+    };
+  });
+}
+
+export function currentGoalPhase(goal) {
+  const normalized = normalizeGoal(goal ?? {});
+  return normalized.phases.find((phase) => phase.id === normalized.currentPhaseId) ?? null;
+}
+
+export function nextGoalPhase(goal, phaseId = currentGoalPhase(goal)?.id) {
+  const phases = normalizeGoal(goal ?? {}).phases;
+  const index = phases.findIndex((phase) => phase.id === phaseId);
+  return index >= 0 ? phases[index + 1] ?? null : null;
+}
+
+export function phaseCriterionIds(goal, phaseId = currentGoalPhase(goal)?.id) {
+  const phase = normalizeGoal(goal ?? {}).phases.find((item) => item.id === phaseId);
+  return phase?.criterionIds ?? [];
+}
+
+export function applyPhaseTransition(goal, toPhaseId) {
+  const normalized = normalizeGoal(goal ?? {});
+  const current = currentGoalPhase(normalized);
+  const next = nextGoalPhase(normalized, current?.id);
+  if (!current || !next || next.id !== toPhaseId) throw new Error("Phase transition must advance to the immediate next phase.");
+  const criteria = normalized.criteria.filter((criterion) => current.criterionIds.includes(criterion.id));
+  const incomplete = criteria.filter((criterion) => criterion.status !== "passed" || !criterion.evidence?.trim());
+  if (incomplete.length) throw new Error(`Phase ${current.id} cannot advance; criteria are incomplete: ${incomplete.map((criterion) => criterion.id).join(", ")}`);
+  return {
+    ...normalized,
+    currentPhaseId: next.id,
+    phases: normalized.phases.map((phase) => phase.id === current.id ? { ...phase, status: "passed" } : phase.id === next.id ? { ...phase, status: "active" } : phase),
+    nextAction: next.nextAction ?? next.objective ?? normalized.nextAction,
   };
 }
 
@@ -42,7 +97,7 @@ export function normalizeCriteriaInputs(inputs, existing = []) {
     const status = input.status ?? "pending";
     if (!["pending", "passed", "failed"].includes(status)) throw new Error(`Invalid criterion status: ${status}`);
     if (status === "passed" && !input.evidence?.trim()) throw new Error(`Criterion ${id} requires evidence to be marked passed.`);
-    result.push({ id, text, status, evidence: input.evidence?.trim() || undefined });
+    result.push({ id, text, status, evidence: input.evidence?.trim() || undefined, ...(input.phaseId?.trim() ? { phaseId: input.phaseId.trim() } : {}) });
   }
   return result;
 }
@@ -152,6 +207,9 @@ export function buildGoalContextPacket(goal, scaffold, request = {}) {
       nextAction: normalized.nextAction,
     },
     criteria: normalized.criteria,
+    phases: normalized.phases,
+    currentPhase: currentGoalPhase(normalized),
+    nextPhase: nextGoalPhase(normalized),
     state: {
       summary: normalized.summary ?? "",
       checklist: normalized.checklist ?? [],
@@ -207,7 +265,7 @@ export function applyCriterionUpdates(criteria, updates) {
 }
 
 export function validateReview(review) {
-  if (review.kind !== undefined && !["terminal", "strategic"].includes(review.kind)) throw new Error(`Invalid review kind: ${review.kind}`);
+  if (review.kind !== undefined && !["terminal", "strategic", "phase_gate"].includes(review.kind)) throw new Error(`Invalid review kind: ${review.kind}`);
   if (!["ready_to_complete", "not_ready", "blocked"].includes(review.verdict)) throw new Error(`Invalid review verdict: ${review.verdict}`);
   if (!Array.isArray(review.findings) || review.findings.length === 0 || review.findings.some((item) => !item?.trim())) throw new Error("Review findings are required.");
   if (!review.evidenceSummary?.trim()) throw new Error("Review evidenceSummary is required.");
@@ -371,6 +429,13 @@ export function validateGoalAgentReport(report) {
     validateStringArray(report.findings, "findings");
     if (report.outcome === "progress" && report.evidence.length === 0 && !report.actions.some((item) => item.evidence?.length)) throw new Error("Researcher progress reports require research evidence.");
   }
+  if (report.phaseTransition !== undefined) {
+    if (!report.phaseTransition || !isNonEmptyString(report.phaseTransition.toPhaseId)) throw new Error("phaseTransition.toPhaseId is required.");
+    if (report.phaseTransition.evidence !== undefined) {
+      if (!Array.isArray(report.phaseTransition.evidence)) throw new Error("phaseTransition.evidence must be an array.");
+      report.phaseTransition.evidence.forEach((item, index) => validateEvidenceRef(item, `phaseTransition.evidence[${index}]`));
+    }
+  }
   if (report.role === "reviewer") {
     if (!["ready_to_complete", "not_ready", "blocked"].includes(report.verdict)) throw new Error("Reviewer report verdict is invalid.");
     if (!Array.isArray(report.findings) || report.findings.length === 0 || report.findings.some((item) => !isNonEmptyString(item))) throw new Error("Reviewer report findings must be a non-empty array of strings.");
@@ -400,7 +465,7 @@ export function criteriaInputsFromGoalAgentReport(report) {
   for (const item of report?.criteriaUpdates ?? []) {
     const evidence = formatEvidenceRefs(item.evidence).join("; ") || undefined;
     if (item.operation === "add") {
-      proposed.push({ id: item.id, text: item.text ?? "", status: item.status, evidence });
+      proposed.push({ id: item.id, text: item.text ?? "", status: item.status, evidence, phaseId: item.phaseId });
     } else if (item.id && item.status) {
       updates.push({ id: item.id, status: item.status, evidence });
     }
@@ -468,13 +533,24 @@ export function applyGoalReviewerReport(goal, report, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const reviewKind = options.reviewKind ?? "terminal";
   validateCriteriaAssessmentItems(report.criteriaAssessment ?? [], "criteriaAssessment");
-  const assessmentGaps = reviewKind === "terminal" && report.verdict === "ready_to_complete"
-    ? reviewerCriteriaAssessmentGaps(goal.criteria ?? [], report.criteriaAssessment ?? [], { requireProven: true })
+  const normalizedGoal = normalizeGoal(goal);
+  const currentPhase = currentGoalPhase(normalizedGoal);
+  const phaseGate = reviewKind === "phase_gate";
+  if (phaseGate && !currentPhase) throw new Error("Phase-gate reviews require a current phase.");
+  if (phaseGate && report.verdict === "ready_to_complete" && !report.phaseTransition?.toPhaseId) throw new Error("Ready phase-gate reviews require a phase transition target.");
+  const phaseCriteria = phaseGate ? normalizedGoal.criteria.filter((criterion) => currentPhase.criterionIds.includes(criterion.id)) : normalizedGoal.criteria;
+  const assessmentGaps = (phaseGate || (reviewKind === "terminal" && report.verdict === "ready_to_complete"))
+    ? reviewerCriteriaAssessmentGaps(phaseCriteria, report.criteriaAssessment ?? [], { requireProven: report.verdict === "ready_to_complete" })
     : [];
-  if (reviewKind === "terminal" && assessmentGaps.length) throw new Error(`Terminal reviewer criteriaAssessment is incomplete: ${assessmentGaps.join("; ")}`);
+  if (phaseGate && report.verdict === "ready_to_complete" && assessmentGaps.length) throw new Error(`Phase-gate criteriaAssessment is incomplete: ${assessmentGaps.join("; ")}`);
+  if (reviewKind === "terminal" && report.verdict === "ready_to_complete" && assessmentGaps.length) throw new Error(`Terminal reviewer criteriaAssessment is incomplete: ${assessmentGaps.join("; ")}`);
+  if (phaseGate && report.verdict === "ready_to_complete") {
+    const expectedNext = nextGoalPhase(normalizedGoal)?.id;
+    if (report.phaseTransition.toPhaseId !== expectedNext) throw new Error("Phase transition must target the immediate next phase.");
+  }
   const structuredEvidence = formatEvidenceRefs(report.evidence);
-  const criteria = reviewKind === "terminal" && report.verdict === "ready_to_complete"
-    ? (goal.criteria ?? []).map((criterion) => {
+  const criteria = (reviewKind === "terminal" || phaseGate) && report.verdict === "ready_to_complete"
+    ? normalizedGoal.criteria.map((criterion) => {
       const assessment = (report.criteriaAssessment ?? []).find((item) => item.id === criterion.id && item.status === "proven");
       if (!assessment) return criterion;
       return { ...criterion, status: "passed", evidence: formatEvidenceRefs(assessment.evidence).join("; ") || assessment.reason || criterion.evidence };
@@ -494,15 +570,19 @@ export function applyGoalReviewerReport(goal, report, options = {}) {
   const reviewed = {
     ...goal,
     criteria,
-    reviews: [...(goal.reviews ?? []), review].slice(-20),
+    reviews: [...(normalizedGoal.reviews ?? []), review].slice(-20),
     lastReviewStep: goal.stepCount,
-    evidence: appendUniqueStrings(goal.evidence, formatEvidenceRefs(report.evidence)),
+    evidence: appendUniqueStrings(normalizedGoal.evidence, formatEvidenceRefs(report.evidence)),
     nextAction: reviewKind === "strategic"
       ? report.nextAction ?? review.unresolvedGaps?.[0] ?? "Continue goal execution using the strategic review findings."
       : report.verdict === "ready_to_complete"
         ? "Goal verified complete by parent review."
         : review.unresolvedGaps?.[0] ?? "Address parent verification gaps.",
   };
+  if (phaseGate) {
+    if (report.verdict !== "ready_to_complete") return reviewed;
+    return applyPhaseTransition(reviewed, report.phaseTransition.toPhaseId);
+  }
   if (reviewKind !== "terminal") return reviewed;
   const readiness = completionReadiness(reviewed);
   return {
