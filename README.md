@@ -126,13 +126,39 @@ Commands:
 - `/goal scaffold <id>` selects a scaffold for the current goal.
 - `/goal scaffold status` shows the current scaffold.
 
+### Quick start
+
+```text
+/goal Write a short tragic tale about goblins and Rust to /tmp/goblins-rust.md
+```
+
+For a bounded coding task:
+
+```text
+/goal --max 5 Build and test a small static web app in /tmp/my-app
+```
+
+Use `/goal status` to inspect progress. The model-facing `goal_phases` tool defines ordered phases; workers stay within the current phase, and reviewer evidence is required before the orchestrator advances to the next one.
+
+### State and execution
+
 The extension stores durable goal state under `~/.pi/agent/goals/` with a single index file mapping projects to current goals. `/goal` command invocations are also recorded as TUI-only chat entries rendered like user messages, without adding command text to the LLM context. It exposes `get_goal`, `goal_note`, `goal_phases`, `goal_criteria`, `goal_criterion_update`, `goal_review`, `goal_block`, and `update_goal` tools. Phases are ordered and evidence-gated; workers may propose readiness, but only reviewer/orchestrator logic advances the current phase. `get_goal` is intended for explicit goal work or autonomous continuation; when the last goal is complete or cleared, it returns a short `NO_ACTIVE_GOAL` response rather than injecting terminal history into unrelated work. `goal_review` accepts structured evidence and per-criterion assessments, so manually recorded terminal reviews use the same evidence model as delegated reviews; it records readiness but `update_goal` remains the explicit completion command. Autonomous continuations run through a bundled `goal-worker` sub-agent in a fresh persisted Pi session so bulky execution context stays out of the parent chat while the raw subagent session remains auditable. The parent extension records each worker report, owns lifecycle state, and queues follow-up worker turns until the goal is complete, paused, blocked, cleared, or max iterations are reached.
+
+### Completion and review
 
 For long-horizon goals, the model or delegated worker can define/update evidence-bearing success criteria, record structured facts/assumptions/risks/blockers/evidence, and perform terminal reviews. Goal JSON also keeps a bounded `iterations` list with each delegated step's outcome, compact evidence, next action, roles, and references to the persisted Pi session files for worker/parent-reviewer runs. `update_goal` refuses model-driven completion until criteria are passed with evidence and the latest review says `ready_to_complete`; delegated workers can only propose readiness. When a worker proposes completion, the parent first runs readiness checks, then performs a concise parent-review pass before marking the goal complete and posting brief completion commentary.
 
+### Continuation policy
+
 The default continuation policy is intentionally generic: make one coherent unit of progress, update durable state, and stop. A coherent unit can be a focused change, bounded investigation, review, or an operating cycle that checks several live concerns and advances one primary concern.
 
-Goal scaffolds customize the continuation method. Bundled scaffolds are installed with this package under `scaffolds/<id>/SCAFFOLD.md`; current bundled scaffolds are `default`, `zenith` (gap-closing/review discipline), and `operations` (portfolio management for many spinning plates). Custom scaffolds can be added at `~/.pi/agent/scaffolds/<id>/SCAFFOLD.md` or project-local `.pi/scaffolds/<id>/SCAFFOLD.md`; project scaffolds override user scaffolds, which override bundled scaffolds.
+Goal scaffolds customize the continuation method. The bundled scaffold IDs are:
+
+- **`default`** — generic bounded progress.
+- **`zenith`** — linear gap-closing with review discipline.
+- **`operations`** — long-running portfolio/lane management. The ID is `operations`, not `operational`.
+
+Bundled scaffolds are installed under `scaffolds/<id>/SCAFFOLD.md`. Custom scaffolds can be added at `~/.pi/agent/scaffolds/<id>/SCAFFOLD.md` or project-local `.pi/scaffolds/<id>/SCAFFOLD.md`; project scaffolds override user scaffolds, which override bundled scaffolds. `/goal scaffold <id>` selects an existing scaffold for the active goal. A phase may also name its own scaffold through `goal_phases`.
 
 Scaffold files are Markdown with optional simple frontmatter:
 
@@ -166,7 +192,8 @@ nix develop --command node --test tests/*.test.mjs
 
 Current tests:
 - `tests/secret-detection.test.mjs` (goal-state secret detection)
-- `tests/goal-core.test.mjs` (goal criteria/review readiness helpers)
+- `tests/goal-core.test.mjs` (goal criteria, phase, and review helpers)
+- `tests/goal-integration.integration.mjs` (mocked `/goal` orchestration and lookup flows)
 
 Recommended test strategy for extensions:
 1. **Unit tests** for pure logic (regex/policy decision code).
