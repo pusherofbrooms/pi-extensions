@@ -111,6 +111,10 @@ test("appendUniqueStrings appends and deduplicates durable state", () => {
   assert.deepEqual(appendUniqueStrings(["A", "b"], [" a ", "C", ""]), ["A", "b", "C"]);
 });
 
+test("appendUniqueStrings keeps the newest bounded state entries", () => {
+  assert.deepEqual(appendUniqueStrings(["A", "B"], ["C", "D"], 3), ["B", "C", "D"]);
+});
+
 test("mergeCriteria preserves existing criteria while adding proposed criteria and updates", () => {
   const existing = [{ id: "CRIT-001", text: "Existing", status: "pending" }];
   const merged = mergeCriteria(existing, [{ text: "New" }], [{ id: "CRIT-001", status: "failed", evidence: "observed failing" }]);
@@ -124,6 +128,13 @@ test("mergeCriteria does not downgrade existing criteria when re-proposed withou
   const existing = [{ id: "CRIT-001", text: "Existing", status: "passed", evidence: "proof" }];
   assert.deepEqual(mergeCriteria(existing, [{ id: "CRIT-001", text: "Existing renamed" }]), [
     { id: "CRIT-001", text: "Existing renamed", status: "passed", evidence: "proof" },
+  ]);
+});
+
+test("criterion updates preserve prior evidence when only status changes", () => {
+  const criteria = [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "original proof" }];
+  assert.deepEqual(applyCriterionUpdates(criteria, [{ id: "CRIT-001", status: "failed" }]), [
+    { id: "CRIT-001", text: "Done", status: "failed", evidence: "original proof" },
   ]);
 });
 
@@ -260,6 +271,14 @@ test("completionReadiness requires criteria evidence, reviewer assessment eviden
   assert.equal(completionReadiness({ ...base, reviews: [{ ...terminalReview, criteriaAssessment: [] }] }).ready, false);
   assert.match(completionReadiness({ ...base, reviews: [{ ...terminalReview, criteriaAssessment: [] }] }).missing.join("; "), /missing reviewer assessment/);
   assert.equal(completionReadiness({ ...base, status: "blocked", reviews: [terminalReview] }).ready, false);
+});
+
+test("completionReadiness rejects duplicate, unknown, and contradictory reviewer assessments", () => {
+  const base = { status: "active", criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] };
+  const review = { verdict: "ready_to_complete", findings: ["ok"], evidenceSummary: "proof", evidence: ["observation:goal state — observed: proof"] };
+  assert.match(completionReadiness({ ...base, reviews: [{ ...review, criteriaAssessment: [provenAssessment(), provenAssessment()] }] }).missing.join("; "), /duplicate/);
+  assert.match(completionReadiness({ ...base, reviews: [{ ...review, criteriaAssessment: [provenAssessment(), provenAssessment("CRIT-999")] }] }).missing.join("; "), /not a current criterion/);
+  assert.match(completionReadiness({ ...base, reviews: [{ ...review, criteriaAssessment: [{ id: "CRIT-001", status: "contradicted", reason: "A failing check remains.", evidence: [evidence()] }] }] }).missing.join("; "), /contradicted/);
 });
 
 test("strategic reviews are distinguished from terminal completion reviews", () => {
@@ -618,6 +637,17 @@ test("validateGoalAgentReport accepts structured worker reports", () => {
     criteriaUpdates: [{ operation: "add", text: "Reports validate successfully.", status: "pending" }],
     nextAction: "Adapt goal worker prompt.",
   }));
+});
+
+test("validateGoalAgentReport rejects malformed nested evidence", () => {
+  assert.throws(() => validateGoalAgentReport({
+    ...workerReport(),
+    actions: [{ summary: "Changed files.", evidence: [{ kind: "unknown", ref: "x", summary: "bad" }] }],
+  }), /actions\[0\]\.evidence\[0\]\.kind is invalid/);
+  assert.throws(() => validateGoalAgentReport({
+    ...workerReport(),
+    proposedState: { evidenceToAdd: [{ kind: "test", ref: "x" }] },
+  }), /proposedState\.evidenceToAdd\[0\]\.summary is required/);
 });
 
 test("validateGoalAgentReport rejects weak completion and blocker claims", () => {
