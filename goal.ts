@@ -4,7 +4,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "typebox";
-import { runAgentSession } from "./agent-runner.ts";
+import { runAgentSession, type RunAgentSessionOptions } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
 import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, formatEvidenceRefs, isTerminalGoal, normalizeCriteriaInputs, normalizeGoal, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
@@ -208,6 +208,18 @@ type GoalScaffold = {
   source: "bundled" | "user" | "project";
   path?: string;
   policy: ScaffoldPolicy;
+};
+
+export type GoalRuntimeDeps = {
+  runAgent: (options: RunAgentSessionOptions) => ReturnType<typeof runAgentSession>;
+  now: () => string;
+  writeGoal: (goal: StoredGoal) => Promise<StoredGoal>;
+};
+
+const DEFAULT_GOAL_RUNTIME_DEPS: GoalRuntimeDeps = {
+  runAgent: runAgentSession,
+  now: nowIso,
+  writeGoal,
 };
 
 
@@ -595,8 +607,9 @@ async function runIsolatedAgent(
   systemPromptPath: string,
   prompt: string,
   tools: string[],
+  deps: GoalRuntimeDeps,
 ): Promise<{ text: string; sessionFile?: string }> {
-  const result = await runAgentSession({
+  const result = await deps.runAgent({
     cwd: goal.cwd,
     systemPrompt: await loadAgentSystemPrompt(systemPromptPath),
     prompt,
@@ -621,49 +634,53 @@ async function checkpointRole(
   role: GoalSubagentRole,
   status: GoalRoleCheckpoint["status"],
   details: { summary?: string; evidence?: string[]; sessionFile?: string; error?: unknown },
+  deps: GoalRuntimeDeps,
 ): Promise<StoredGoal> {
   const checkpoint: GoalRoleCheckpoint = {
     iteration: goal.stepCount + 1,
     role,
     status,
-    timestamp: nowIso(),
+    timestamp: deps.now(),
     summary: details.summary,
     evidence: details.evidence,
     sessionFile: details.sessionFile,
     error: details.error === undefined ? undefined : roleCheckpointError(details.error),
   };
-  return writeGoal(appendGoalRoleCheckpoint(goal, checkpoint) as StoredGoal);
+  return deps.writeGoal(appendGoalRoleCheckpoint(goal, checkpoint) as StoredGoal);
 }
 
-async function runGoalObserver(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold)): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runGoalObserver(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
     GOAL_OBSERVER_AGENT_PATH,
     observerPrompt(goal, scaffold, workflowPlan),
     ["read", "grep", "find", "ls", "bash"],
+    deps,
   );
   return { report: parseGoalAgentReportWithSession(result.text, "observer", result.sessionFile), sessionFile: result.sessionFile };
 }
 
-async function runGoalResearcher(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold)): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runGoalResearcher(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
     GOAL_RESEARCHER_AGENT_PATH,
     researcherPrompt(goal, scaffold, workflowPlan),
     ["read", "grep", "find", "ls", "bash"],
+    deps,
   );
   return { report: parseGoalAgentReportWithSession(result.text, "researcher", result.sessionFile), sessionFile: result.sessionFile };
 }
 
-async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), priorRoleReports: GoalAgentReport[] = []): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), priorRoleReports: GoalAgentReport[] = [], deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
     GOAL_WORKER_AGENT_PATH,
     delegatedPrompt(goal, scaffold, workflowPlan, priorRoleReports),
     ["read", "grep", "find", "ls", "bash", "edit", "write"],
+    deps,
   );
   return { report: parseGoalAgentReportWithSession(result.text, "worker", result.sessionFile), sessionFile: result.sessionFile };
 }
@@ -687,13 +704,14 @@ function strategicReviewPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflo
   return `Perform a scheduled strategic review for this autonomous goal.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: reviewer (scheduled strategic review)\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nStrategic review contract:\n- This is not a terminal completion review. Its default purpose is to inspect alignment, evidence quality, stale assumptions, blockers, repeated ineffective actions, and the highest-value next focus.\n- Do not modify files or make broad new execution. Use read-only inspection and lightweight commands only when needed to verify state.\n- Use verdict=not_ready with unresolvedGaps/recommended next focus unless the evidence explicitly warrants a terminal completion review next.\n- Even if verdict=ready_to_complete is warranted, the orchestrator records this as a strategic review only; it must not complete the goal by itself.\n- Do not update goal lifecycle state. The parent owns status and completion.\n\nReturn only valid JSON using schemaVersion 1. Use role=reviewer and outcome=review_complete. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run.\n{\n  "schemaVersion": 1,\n  "role": "reviewer",\n  "outcome": "review_complete",\n  "summary": "concise strategic review result",\n  "confidence": "medium",\n  "actions": [{ "summary": "strategic review performed" }],\n  "evidence": [{ "kind": "observation", "ref": "goal state", "status": "observed", "summary": "what was reviewed" }],\n  "verdict": "not_ready",\n  "commentary": "brief strategic review commentary",\n  "findings": ["alignment/evidence/risk finding"],\n  "criteriaAssessment": [{ "id": "CRIT-001", "status": "not_proven", "reason": "why", "evidence": [] }],\n  "unresolvedGaps": ["recommended next focus or remaining gap"],\n  "scopeConcerns": [],\n  "nextAction": "recommended next worker action"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
-async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold)): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
     GOAL_PARENT_REVIEWER_AGENT_PATH,
     strategicReviewPrompt(goal, scaffold, workflowPlan),
     ["read", "grep", "find", "ls", "bash"],
+    deps,
   );
   const report = parseGoalAgentReportWithSession(result.text, "reviewer", result.sessionFile);
   const secretError = checkReportForSecrets(report);
@@ -716,13 +734,14 @@ function parentReviewPrompt(goal: StoredGoal, workerReport: GoalAgentReport, sca
   return `A delegated goal worker believes this autonomous goal is ready for review. Perform a concise parent-side verification pass.\n\nContext packet after worker report (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nWorker report:\n${JSON.stringify(workerReport, null, 2)}\n\nVerification contract:\n- Compare the objective, criteria, evidence, checklist, and worker report.\n- Inspect files or run lightweight commands only if needed to verify concrete claims.\n- Do not modify files.\n- Return not_ready if required evidence is missing, criteria are not actually satisfied, or verification is uncertain.\n- Assess every current criterion exactly once in criteriaAssessment; use the criterion ids from the context packet.\n- Return ready_to_complete only if the goal is genuinely done and each criterion assessment is proven with concrete evidence.\n- Include brief commentary suitable to show the user when the goal completes or needs more work.\n\nReturn only valid JSON using schemaVersion 1. Use role=reviewer and outcome=review_complete.\n{\n  "schemaVersion": 1,\n  "role": "reviewer",\n  "outcome": "review_complete",\n  "summary": "concise review result",\n  "confidence": "medium",\n  "actions": [{ "summary": "verification performed" }],\n  "evidence": [{ "kind": "observation", "ref": "goal state", "status": "observed", "summary": "what proves the verdict" }],\n  "verdict": "ready_to_complete",\n  "commentary": "brief user-facing parent commentary",\n  "findings": ["..."],\n  "criteriaAssessment": [{ "id": "CRIT-001", "status": "proven", "reason": "why", "evidence": [{ "kind": "test", "ref": "command", "status": "passed", "summary": "proof" }] }],\n  "unresolvedGaps": ["required unless ready_to_complete"],\n  "scopeConcerns": []\n}\n\nOmit unresolvedGaps when ready_to_complete. Do not include Markdown. Do not include commentary outside the JSON object.`;
 }
 
-async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, scaffold: GoalScaffold, ctx: ExtensionContext): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, scaffold: GoalScaffold, ctx: ExtensionContext, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
     GOAL_PARENT_REVIEWER_AGENT_PATH,
     parentReviewPrompt(goal, workerReport, scaffold),
     ["read", "grep", "find", "ls", "bash"],
+    deps,
   );
   const report = parseGoalAgentReportWithSession(result.text, "reviewer", result.sessionFile);
   const secretError = checkReportForSecrets(report);
@@ -736,7 +755,7 @@ function applyDelegatedReport(goal: StoredGoal, report: GoalAgentReport, scaffol
   return applyGoalAgentReport(goal, report, scaffold) as StoredGoal;
 }
 
-async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal): Promise<void> {
+export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<void> {
   if (ctx.hasUI) ctx.ui.notify(`Running delegated goal step ${goal.stepCount + 1}...`, "info");
   const scaffold = await loadScaffold(ctx.cwd, goal.scaffold ?? "default");
   const workflowPlan = selectGoalWorkflowPlan(scaffold);
@@ -745,9 +764,9 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     if (ctx.hasUI) ctx.ui.notify("Running scheduled strategic goal review...", "info");
     let reviewRun: { report: GoalAgentReport; sessionFile?: string };
     try {
-      reviewRun = await runScheduledStrategicReview(goal, scaffold, ctx, workflowPlan);
+      reviewRun = await runScheduledStrategicReview(goal, scaffold, ctx, workflowPlan, deps);
     } catch (error) {
-      await checkpointRole(goal, "reviewer", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile });
+      await checkpointRole(goal, "reviewer", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile }, deps);
       throw error;
     }
     const strategicReview = reviewRun.report;
@@ -756,9 +775,10 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
       "reviewer",
       "completed",
       { summary: strategicReview.summary, evidence: evidenceText(strategicReview.evidence), sessionFile: reviewRun.sessionFile },
+      deps,
     );
     const nextStep = goal.stepCount + 1;
-    const iterationTimestamp = nowIso();
+    const iterationTimestamp = deps.now();
     const sessionRefs: GoalSubagentSessionRef[] = [{ role: "reviewer", timestamp: iterationTimestamp, sessionFile: reviewRun.sessionFile }];
     const withIteration = appendGoalIteration(reviewedGoal, {
       step: nextStep,
@@ -771,7 +791,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
       sessionRefs,
     });
     const reachedCap = reviewedGoal.maxIterations !== undefined && nextStep >= reviewedGoal.maxIterations;
-    const updated = await writeGoal({
+    const updated = await deps.writeGoal({
       ...withIteration,
       status: reachedCap && reviewedGoal.status === "active" ? "paused" : reviewedGoal.status,
       stopReason: reachedCap && reviewedGoal.status === "active" ? "maxIterationsReached" : reviewedGoal.stopReason,
@@ -792,15 +812,16 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   let afterObservation = goal;
   if (workflowPlan.roles[0] === "observer") {
     try {
-      observerRun = await runGoalObserver(goal, scaffold, ctx, workflowPlan);
+      observerRun = await runGoalObserver(goal, scaffold, ctx, workflowPlan, deps);
       afterObservation = await checkpointRole(
         applyDelegatedReport(goal, observerRun.report, scaffold),
         "observer",
         "completed",
         { summary: observerRun.report.summary, evidence: evidenceText(observerRun.report.evidence), sessionFile: observerRun.sessionFile },
+        deps,
       );
     } catch (error) {
-      await checkpointRole(goal, "observer", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile });
+      await checkpointRole(goal, "observer", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile }, deps);
       throw error;
     }
   }
@@ -809,15 +830,16 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   let afterResearch = afterObservation;
   if (workflowPlan.roles[0] === "researcher") {
     try {
-      researcherRun = await runGoalResearcher(afterObservation, scaffold, ctx, workflowPlan);
+      researcherRun = await runGoalResearcher(afterObservation, scaffold, ctx, workflowPlan, deps);
       afterResearch = await checkpointRole(
         applyDelegatedReport(afterObservation, researcherRun.report, scaffold),
         "researcher",
         "completed",
         { summary: researcherRun.report.summary, evidence: evidenceText(researcherRun.report.evidence), sessionFile: researcherRun.sessionFile },
+        deps,
       );
     } catch (error) {
-      await checkpointRole(afterObservation, "researcher", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile });
+      await checkpointRole(afterObservation, "researcher", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile }, deps);
       throw error;
     }
   }
@@ -825,9 +847,9 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   const priorRoleReports = [observerRun?.report, researcherRun?.report].filter(Boolean) as GoalAgentReport[];
   let workerRun: { report: GoalAgentReport; sessionFile?: string };
   try {
-    workerRun = await runGoalWorker(afterResearch, scaffold, ctx, workflowPlan, priorRoleReports);
+    workerRun = await runGoalWorker(afterResearch, scaffold, ctx, workflowPlan, priorRoleReports, deps);
   } catch (error) {
-    await checkpointRole(afterResearch, "worker", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile });
+    await checkpointRole(afterResearch, "worker", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile }, deps);
     throw error;
   }
   const report = workerRun.report;
@@ -836,6 +858,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     "worker",
     "completed",
     { summary: report.summary, evidence: evidenceText(report.evidence), sessionFile: workerRun.sessionFile },
+    deps,
   );
   const nextStep = goal.stepCount + 1;
 
@@ -847,7 +870,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   if (report.outcome === "ready_for_review" && workflowPlan.reviewOnReady) {
     if (ctx.hasUI) ctx.ui.notify("Delegated worker proposed completion; running parent verification...", "info");
     try {
-      const parentReviewRun = await runParentReview(afterReport, report, scaffold, ctx);
+      const parentReviewRun = await runParentReview(afterReport, report, scaffold, ctx, deps);
       parentReview = parentReviewRun.report;
       parentReviewSessionFile = parentReviewRun.sessionFile;
       reviewedReport = await checkpointRole(
@@ -855,10 +878,11 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
         "reviewer",
         "completed",
         { summary: parentReview.summary, evidence: evidenceText(parentReview.evidence), sessionFile: parentReviewSessionFile },
+        deps,
       );
       completed = reviewedReport.status === "complete";
     } catch (error) {
-      await checkpointRole(afterReport, "reviewer", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile });
+      await checkpointRole(afterReport, "reviewer", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile }, deps);
       throw error;
     }
   } else if (report.outcome === "ready_for_review") {
@@ -866,7 +890,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     reviewedReport = {
       ...afterReport,
       reviews: [...(afterReport.reviews ?? []), {
-        timestamp: nowIso(),
+        timestamp: deps.now(),
         verdict: "not_ready" as const,
         findings: ["Programmatic readiness check rejected delegated completion before parent verification."],
         unresolvedGaps: gaps,
@@ -877,7 +901,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
   }
 
   const reachedCap = reviewedReport.maxIterations !== undefined && nextStep >= reviewedReport.maxIterations;
-  const iterationTimestamp = nowIso();
+  const iterationTimestamp = deps.now();
   const sessionRefs: GoalSubagentSessionRef[] = [
     ...(observerRun ? [{ role: "observer" as const, timestamp: iterationTimestamp, sessionFile: observerRun.sessionFile }] : []),
     ...(researcherRun ? [{ role: "researcher" as const, timestamp: iterationTimestamp, sessionFile: researcherRun.sessionFile }] : []),
@@ -894,7 +918,7 @@ async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext,
     nextAction: reviewedReport.nextAction,
     sessionRefs,
   });
-  const updated = await writeGoal({
+  const updated = await deps.writeGoal({
     ...withIteration,
     status: completed ? "complete" : reachedCap && reviewedReport.status === "active" ? "paused" : reviewedReport.status,
     stopReason: completed ? reviewedReport.stopReason : reachedCap && reviewedReport.status === "active" ? "maxIterationsReached" : reviewedReport.stopReason,
