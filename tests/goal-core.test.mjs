@@ -333,6 +333,27 @@ test("applyGoalReviewerReport records strategic reviews without completing", () 
   assert.equal(completionReadiness(strategic).ready, false);
 });
 
+test("applyGoalReviewerReport preserves structured manual not-ready reviews", () => {
+  const reviewed = applyGoalReviewerReport(baseGoal(), {
+    schemaVersion: 1,
+    role: "reviewer",
+    outcome: "review_complete",
+    summary: "A gap remains.",
+    confidence: "medium",
+    actions: [],
+    evidence: [evidence("observation", "goal state")],
+    verdict: "not_ready",
+    findings: ["Implementation needs one more check."],
+    unresolvedGaps: ["Run the integration check."],
+    criteriaAssessment: [],
+  });
+
+  assert.equal(reviewed.reviews.at(-1).kind, "terminal");
+  assert.deepEqual(reviewed.reviews.at(-1).evidence, ["observation:goal state — passed: Proof."]);
+  assert.deepEqual(reviewed.reviews.at(-1).criteriaAssessment, []);
+  assert.equal(reviewed.nextAction, "Run the integration check.");
+});
+
 test("applyGoalReviewerReport rejects ready terminal reviews with incomplete criteria assessment", () => {
   const readyGoal = baseGoal({ criteria: [{ id: "CRIT-001", text: "Done", status: "passed", evidence: "proof" }] });
   assert.throws(() => applyGoalReviewerReport(readyGoal, {

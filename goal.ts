@@ -48,6 +48,8 @@ type GoalReview = {
   findings: string[];
   unresolvedGaps?: string[];
   evidenceSummary: string;
+  evidence?: GoalEvidenceRef[];
+  criteriaAssessment?: GoalAgentReport["criteriaAssessment"];
 };
 
 type GoalChecklistItem = {
@@ -1337,22 +1339,51 @@ export default function goalExtension(pi: ExtensionAPI) {
       findings: Type.Array(Type.String()),
       unresolvedGaps: Type.Optional(Type.Array(Type.String())),
       evidenceSummary: Type.String(),
+      evidence: Type.Optional(Type.Array(Type.Object({
+        kind: StringEnum(["command", "file", "test", "url", "session", "observation", "artifact"] as const),
+        ref: Type.String(),
+        status: Type.Optional(StringEnum(["passed", "failed", "observed", "created", "modified", "not_run"] as const)),
+        summary: Type.String(),
+      }))),
+      criteriaAssessment: Type.Optional(Type.Array(Type.Object({
+        id: Type.String(),
+        status: StringEnum(["proven", "not_proven", "contradicted", "missing_evidence"] as const),
+        reason: Type.String(),
+        evidence: Type.Optional(Type.Array(Type.Object({
+          kind: StringEnum(["command", "file", "test", "url", "session", "observation", "artifact"] as const),
+          ref: Type.String(),
+          status: Type.Optional(StringEnum(["passed", "failed", "observed", "created", "modified", "not_run"] as const)),
+          summary: Type.String(),
+        }))),
+      }))),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      validateReview(params);
-      const allText = [params.evidenceSummary, ...params.findings, ...(params.unresolvedGaps ?? [])];
-      const secretError = allText.map((item) => checkNoSecrets(item, "review text")).find(Boolean);
+      const report = {
+        schemaVersion: 1 as const,
+        role: "reviewer" as const,
+        outcome: "review_complete" as const,
+        summary: params.evidenceSummary,
+        confidence: "high" as const,
+        actions: [],
+        evidence: params.evidence ?? [],
+        verdict: params.verdict,
+        findings: params.findings,
+        unresolvedGaps: params.unresolvedGaps,
+        criteriaAssessment: params.criteriaAssessment ?? [],
+      };
+      validateGoalAgentReport(report);
+      const secretError = checkReportForSecrets(report);
       if (secretError) throw new Error(`Refusing to store goal review: ${secretError}.`);
-      const review: GoalReview = { timestamp: nowIso(), verdict: params.verdict, findings: params.findings, unresolvedGaps: params.unresolvedGaps, evidenceSummary: params.evidenceSummary };
-      const goal = await mutateCurrentGoal(ctx.cwd, (current) => ({
-        ...current,
-        status: params.verdict === "blocked" ? "blocked" : current.status,
-        stopReason: params.verdict === "blocked" ? "blocked" : current.stopReason,
-        reviews: [...(current.reviews ?? []), review].slice(-20),
-        lastReviewStep: current.stepCount,
-        nextAction: params.verdict === "ready_to_complete" ? "Complete the goal if all criteria are passed." : params.unresolvedGaps?.[0] ?? current.nextAction,
-        continuationQueued: params.verdict === "blocked" ? false : current.continuationQueued,
-      }));
+      const goal = await mutateCurrentGoal(ctx.cwd, (current) => {
+        const reviewed = applyGoalReviewerReport(current, report, { now: nowIso() }) as StoredGoal;
+        return {
+          ...reviewed,
+          // Manual review records readiness; update_goal remains the explicit completion command.
+          status: params.verdict === "blocked" ? "blocked" : current.status,
+          stopReason: params.verdict === "blocked" ? "blocked" : current.stopReason,
+          continuationQueued: params.verdict === "blocked" ? false : current.continuationQueued,
+        };
+      });
       updateStatus(ctx, goal);
       if (!goal) return { content: [{ type: "text", text: "No current goal found." }], details: { updated: false } };
       return { content: [{ type: "text", text: "Goal review recorded." }], details: { updated: true, goal: goalForModel(goal), path: goalPath(goal.id) } };

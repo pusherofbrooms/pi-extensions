@@ -455,7 +455,9 @@ export function applyGoalReviewerReport(goal, report, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const reviewKind = options.reviewKind ?? "terminal";
   validateCriteriaAssessmentItems(report.criteriaAssessment ?? [], "criteriaAssessment");
-  const assessmentGaps = reviewKind === "terminal" ? reviewerCriteriaAssessmentGaps(goal.criteria ?? [], report.criteriaAssessment ?? [], { requireProven: report.verdict === "ready_to_complete" }) : [];
+  const assessmentGaps = reviewKind === "terminal" && report.verdict === "ready_to_complete"
+    ? reviewerCriteriaAssessmentGaps(goal.criteria ?? [], report.criteriaAssessment ?? [], { requireProven: true })
+    : [];
   if (reviewKind === "terminal" && assessmentGaps.length) throw new Error(`Terminal reviewer criteriaAssessment is incomplete: ${assessmentGaps.join("; ")}`);
   const structuredEvidence = formatEvidenceRefs(report.evidence);
   const criteria = reviewKind === "terminal" && report.verdict === "ready_to_complete"
