@@ -18,6 +18,7 @@ import {
   normalizePhases,
   normalizeGoal,
   recommendScaffoldId,
+  resolveGoalContextProfile,
   selectGoalWorkflowPlan,
   validateGoalAgentReport,
   validateReview,
@@ -166,7 +167,7 @@ test("waitingStatusFromReport follows scaffold policy", () => {
   assert.equal(waitingStatusFromReport({ outcome: "progress" }, { waitingAllowed: true }).waiting, false);
 });
 
-test("buildGoalContextPacket produces auditable structured subagent input", () => {
+test("buildGoalContextPacket projects compact role-specific context", () => {
   const goal = {
     id: "g1",
     objective: "Implement goal infra",
@@ -174,7 +175,6 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
     cwd: "/repo",
     stepCount: 2,
     maxIterations: 5,
-    scaffold: "default",
     summary: "Some progress",
     checklist: [{ text: "done", done: false }],
     criteria: [{ id: "CRIT-001", text: "verified", status: "pending" }],
@@ -192,29 +192,62 @@ test("buildGoalContextPacket produces auditable structured subagent input", () =
     iterations: [{ step: 1 }],
     nextAction: "continue",
   };
-  const scaffold = { id: "default", name: "Default", description: "Generic", body: "Do work", source: "bundled", policy: { workflow: "worker" } };
-  const packet = buildGoalContextPacket(goal, scaffold, { role: "reviewer", action: "verify" });
+  const scaffold = { id: "default", body: "Do work", policy: { workflow: "worker", waitingAllowed: false } };
+  const worker = buildGoalContextPacket(goal, scaffold, { role: "worker", action: "continue" });
+  const observer = buildGoalContextPacket(goal, scaffold, { role: "observer", action: "inspect_current_state" });
+  const reviewer = buildGoalContextPacket(goal, scaffold, { role: "reviewer", action: "terminal_review" });
+  const strategic = buildGoalContextPacket(goal, scaffold, { role: "reviewer", action: "scheduled_strategic_review", scheduledReview: true });
+  const audit = buildGoalContextPacket(goal, scaffold, { role: "custom", contextProfile: "audit" });
 
-  assert.equal(packet.schemaVersion, 1);
-  assert.equal(packet.goal.objective, "Implement goal infra");
-  assert.deepEqual(packet.criteria, goal.criteria);
-  assert.deepEqual(packet.state.checklist, goal.checklist);
-  assert.deepEqual(packet.state.facts, ["fact"]);
-  assert.deepEqual(packet.state.assumptions, ["assumption"]);
-  assert.deepEqual(packet.state.risks, ["risk"]);
-  assert.deepEqual(packet.state.blockers, ["blocker"]);
-  assert.deepEqual(packet.state.blockerHistory, [{ timestamp: "b", status: "active", reason: "blocker" }]);
-  assert.deepEqual(packet.state.doctrine, ["doctrine"]);
-  assert.deepEqual(packet.state.evidence, ["evidence"]);
-  assert.deepEqual(packet.state.pinnedEvidence, ["pinned evidence"]);
-  assert.deepEqual(packet.state.roleCheckpoints, [{ iteration: 2, role: "observer", status: "completed", timestamp: "r" }]);
-  assert.equal(packet.state.latestReview.verdict, "not_ready");
-  assert.equal(packet.scaffold.id, "default");
-  assert.equal(packet.scaffold.body, "Do work");
-  assert.equal(packet.scaffold.policy.workflow, "worker");
-  assert.equal(packet.request.role, "reviewer");
-  assert.equal(packet.request.action, "verify");
-  assert.equal(packet.reportContractHint.lifecycleAuthority, "orchestrator");
+  assert.equal(worker.request.contextProfile, "worker");
+  assert.deepEqual(worker.state.facts, ["fact"]);
+  assert.equal(worker.state.latestReview, undefined);
+  assert.equal(worker.state.recentIterations, undefined);
+  assert.equal(worker.goal.id, undefined);
+  assert.deepEqual(observer.state.recentIterations, [{ step: 1 }]);
+  assert.equal(observer.state.facts, undefined);
+  assert.equal(observer.criteria, undefined);
+  assert.equal(reviewer.state.latestReview.verdict, "not_ready");
+  assert.equal(reviewer.state.recentIterations, undefined);
+  assert.deepEqual(strategic.state.recentIterations, [{ step: 1 }]);
+  assert.deepEqual(audit.state.roleCheckpoints, goal.roleCheckpoints);
+  assert.equal(audit.goal.id, "g1");
+  assert.equal(worker.scaffold.body, "Do work");
+  assert.equal(worker.scaffold.policy.waitingAllowed, false);
+  assert.equal(worker.reportContractHint.lifecycleAuthority, "orchestrator");
+  assert.equal(worker.request.priorRoleReports, undefined);
+});
+
+test("resolveGoalContextProfile uses safe role defaults", () => {
+  assert.equal(resolveGoalContextProfile({ role: "observer" }), "observer");
+  assert.equal(resolveGoalContextProfile({ role: "researcher" }), "researcher");
+  assert.equal(resolveGoalContextProfile({ role: "reviewer", scheduledReview: true }), "strategicReviewer");
+  assert.equal(resolveGoalContextProfile({ role: "reviewer" }), "completionReviewer");
+  assert.equal(resolveGoalContextProfile({ role: "new-role" }), "worker");
+  assert.equal(resolveGoalContextProfile({ role: "new-role", contextProfile: "audit" }), "audit");
+  assert.equal(resolveGoalContextProfile({ role: "new-role", contextProfile: "unknown" }), "worker");
+});
+
+test("role context limits criteria to the current phase while strategic review sees all", () => {
+  const goal = baseGoal({
+    criteria: [
+      { id: "CRIT-001", text: "Current", status: "pending" },
+      { id: "CRIT-002", text: "Later", status: "pending" },
+    ],
+    phases: [
+      { id: "one", title: "One", objective: "Current work", status: "active", criterionIds: ["CRIT-001"] },
+      { id: "two", title: "Two", objective: "Later work", status: "pending", criterionIds: ["CRIT-002"] },
+    ],
+    currentPhaseId: "one",
+  });
+  const worker = buildGoalContextPacket(goal, undefined, { role: "worker" });
+  const strategic = buildGoalContextPacket(goal, undefined, { role: "reviewer", scheduledReview: true });
+
+  assert.deepEqual(worker.criteria.map((item) => item.id), ["CRIT-001"]);
+  assert.deepEqual(strategic.criteria.map((item) => item.id), ["CRIT-001", "CRIT-002"]);
+  assert.equal(worker.currentPhase.id, "one");
+  assert.equal(worker.nextPhase, undefined);
+  assert.equal(strategic.nextPhase.id, "two");
 });
 
 test("buildGoalContextPacket carries prior role reports for worker handoff", () => {

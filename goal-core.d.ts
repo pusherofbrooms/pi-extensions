@@ -14,6 +14,7 @@ export function blockedStatusFromReport(report: unknown, policy?: Record<string,
 export function waitingStatusFromReport(report: unknown, policy?: Record<string, unknown>): { waiting: boolean; reason?: string };
 export function recommendScaffoldId(objective?: string): string;
 export function selectGoalWorkflowPlan(scaffold?: unknown): { workflow: string; roles: string[]; workerAction: string; reviewOnReady: boolean; lifecycleAuthority: string; operatingCycle?: boolean; fallbackReason?: string };
+export function resolveGoalContextProfile(request?: Record<string, unknown>): "worker" | "observer" | "researcher" | "completionReviewer" | "strategicReviewer" | "audit";
 export function buildGoalContextPacket(goal: unknown, scaffold?: unknown, request?: Record<string, unknown>): unknown;
 export function goalAgentReportEffectiveOutcome(report: unknown, policy?: Record<string, unknown>): unknown;
 export function criteriaInputsFromGoalAgentReport(report: unknown): { proposed: unknown[]; updates: unknown[] };

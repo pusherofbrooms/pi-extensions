@@ -14,6 +14,8 @@ export function normalizeGoal(goal) {
       : phases.find((phase) => phase.status === "active")?.id ?? phases[0]?.id,
 
     reviews: Array.isArray(goal.reviews) ? goal.reviews : [],
+    checklist: Array.isArray(goal.checklist) ? goal.checklist : [],
+    notes: Array.isArray(goal.notes) ? goal.notes : [],
     facts: Array.isArray(goal.facts) ? goal.facts : [],
     assumptions: Array.isArray(goal.assumptions) ? goal.assumptions : [],
     risks: Array.isArray(goal.risks) ? goal.risks : [],
@@ -188,61 +190,109 @@ export function appendGoalRoleCheckpoint(goal, checkpoint, maxItems = 20) {
   };
 }
 
+const GOAL_CONTEXT_PROFILE_SECTIONS = Object.freeze({
+  worker: ["objective", "phase", "applicableCriteria", "currentWork", "activeConcerns", "durableKnowledge", "scaffold", "priorRoleReports"],
+  observer: ["objective", "phase", "currentWork", "activeConcerns", "recentProgress", "scaffold"],
+  researcher: ["objective", "phase", "applicableCriteria", "activeConcerns", "durableKnowledge", "scaffold"],
+  completionReviewer: ["objective", "phase", "applicableCriteria", "currentWork", "activeConcerns", "durableKnowledge", "latestReview", "scaffold"],
+  strategicReviewer: ["objective", "allPhases", "allCriteria", "currentWork", "activeConcerns", "durableKnowledge", "recentProgress", "latestReview", "scaffold"],
+  audit: ["identity", "objective", "allPhases", "allCriteria", "currentWork", "activeConcerns", "durableKnowledge", "recentProgress", "audit", "latestReview", "scaffold", "priorRoleReports"],
+});
+
+const SAFE_GOAL_CONTEXT_PROFILE = "worker";
+
+export function resolveGoalContextProfile(request = {}) {
+  if (typeof request.contextProfile === "string" && GOAL_CONTEXT_PROFILE_SECTIONS[request.contextProfile]) return request.contextProfile;
+  if (request.role === "observer") return "observer";
+  if (request.role === "researcher") return "researcher";
+  if (request.role === "reviewer") return request.scheduledReview === true || request.action === "scheduled_strategic_review" ? "strategicReviewer" : "completionReviewer";
+  return SAFE_GOAL_CONTEXT_PROFILE;
+}
+
+function compactGoalContext(value) {
+  if (Array.isArray(value)) {
+    const compacted = value.map(compactGoalContext).filter((item) => item !== undefined);
+    return compacted.length ? compacted : undefined;
+  }
+  if (value && typeof value === "object") {
+    const compacted = Object.fromEntries(Object.entries(value)
+      .map(([key, item]) => [key, compactGoalContext(item)])
+      .filter(([, item]) => item !== undefined));
+    return Object.keys(compacted).length ? compacted : undefined;
+  }
+  if (value === undefined || value === null || value === "") return undefined;
+  return value;
+}
+
+function applicableGoalCriteria(goal) {
+  const phase = currentGoalPhase(goal);
+  if (!phase?.criterionIds?.length) return goal.criteria;
+  const ids = new Set(phase.criterionIds);
+  return goal.criteria.filter((criterion) => ids.has(criterion.id));
+}
+
+function buildGoalContextSection(section, goal, scaffold, request) {
+  const latestReview = goal.reviews.at(-1);
+  switch (section) {
+    case "identity":
+      return { goal: { id: goal.id, cwd: goal.cwd, createdAt: goal.createdAt, updatedAt: goal.updatedAt } };
+    case "objective":
+      return { goal: { objective: goal.objective, status: goal.status, stepCount: goal.stepCount ?? 0, maxIterations: goal.maxIterations, stopReason: goal.stopReason, nextAction: goal.nextAction } };
+    case "phase":
+      return { currentPhase: currentGoalPhase(goal), nextPhase: request.role === "reviewer" ? nextGoalPhase(goal) : undefined };
+    case "allPhases":
+      return { phases: goal.phases, currentPhase: currentGoalPhase(goal), nextPhase: nextGoalPhase(goal) };
+    case "applicableCriteria":
+      return { criteria: applicableGoalCriteria(goal) };
+    case "allCriteria":
+      return { criteria: goal.criteria };
+    case "currentWork":
+      return { state: { summary: goal.summary, checklist: goal.checklist } };
+    case "activeConcerns":
+      return { state: { risks: goal.risks, blockers: goal.blockers } };
+    case "durableKnowledge":
+      return { state: { facts: goal.facts, assumptions: goal.assumptions, doctrine: goal.doctrine, evidence: goal.evidence, pinnedEvidence: goal.pinnedEvidence } };
+    case "recentProgress":
+      return { state: { recentNotes: goal.notes.slice(-5), recentIterations: goal.iterations.slice(-3) } };
+    case "latestReview":
+      return { state: { latestReview } };
+    case "audit":
+      return { state: { blockerHistory: goal.blockerHistory, roleCheckpoints: goal.roleCheckpoints.slice(-8) } };
+    case "scaffold":
+      return scaffold ? { scaffold: { id: scaffold.id, body: scaffold.body, policy: scaffold.policy } } : undefined;
+    case "priorRoleReports":
+      return { request: { priorRoleReports: request.priorRoleReports } };
+    default:
+      return undefined;
+  }
+}
+
+function mergeGoalContextSection(target, section) {
+  if (!section) return target;
+  for (const [key, value] of Object.entries(section)) {
+    if (value && typeof value === "object" && !Array.isArray(value) && target[key] && typeof target[key] === "object" && !Array.isArray(target[key])) {
+      target[key] = { ...target[key], ...value };
+    } else {
+      target[key] = value;
+    }
+  }
+  return target;
+}
+
 export function buildGoalContextPacket(goal, scaffold, request = {}) {
   const normalized = normalizeGoal(goal ?? {});
-  const latestReview = normalized.reviews.at(-1) ?? null;
-  return {
-    schemaVersion: 1,
-    goal: {
-      id: normalized.id,
-      objective: normalized.objective,
-      status: normalized.status,
-      cwd: normalized.cwd,
-      stepCount: normalized.stepCount ?? 0,
-      maxIterations: normalized.maxIterations,
-      scaffold: normalized.scaffold ?? scaffold?.id ?? "default",
-      createdAt: normalized.createdAt,
-      updatedAt: normalized.updatedAt,
-      stopReason: normalized.stopReason,
-      nextAction: normalized.nextAction,
-    },
-    criteria: normalized.criteria,
-    phases: normalized.phases,
-    currentPhase: currentGoalPhase(normalized),
-    nextPhase: nextGoalPhase(normalized),
-    state: {
-      summary: normalized.summary ?? "",
-      checklist: normalized.checklist ?? [],
-      facts: normalized.facts,
-      assumptions: normalized.assumptions,
-      risks: normalized.risks,
-      blockers: normalized.blockers,
-      blockerHistory: normalized.blockerHistory,
-      doctrine: normalized.doctrine,
-      evidence: normalized.evidence,
-      pinnedEvidence: normalized.pinnedEvidence,
-      roleCheckpoints: normalized.roleCheckpoints.slice(-8),
-      latestReview,
-      recentNotes: Array.isArray(normalized.notes) ? normalized.notes.slice(-8) : [],
-      recentIterations: normalized.iterations.slice(-5),
-    },
-    scaffold: scaffold ? {
-      id: scaffold.id,
-      name: scaffold.name,
-      description: scaffold.description,
-      body: scaffold.body,
-      source: scaffold.source,
-      path: scaffold.path,
-      policy: scaffold.policy ?? {},
-    } : undefined,
+  const contextProfile = resolveGoalContextProfile(request);
+  const packet = { schemaVersion: 1 };
+  for (const section of GOAL_CONTEXT_PROFILE_SECTIONS[contextProfile]) {
+    mergeGoalContextSection(packet, buildGoalContextSection(section, normalized, scaffold, request));
+  }
+  mergeGoalContextSection(packet, {
     request: {
       role: request.role ?? "worker",
       action: request.action ?? "continue",
-      scheduledReview: request.scheduledReview === true,
+      contextProfile,
       workflow: request.workflow,
-      workflowRoles: request.workflowRoles,
-      operatingCycle: request.operatingCycle === true,
-      priorRoleReports: Array.isArray(request.priorRoleReports) ? request.priorRoleReports : [],
+      operatingCycle: request.operatingCycle === true ? true : undefined,
     },
     reportContractHint: {
       schemaVersion: 1,
@@ -255,7 +305,8 @@ export function buildGoalContextPacket(goal, scaffold, request = {}) {
       },
       ...(request.reportContractHint ?? {}),
     },
-  };
+  });
+  return compactGoalContext(packet);
 }
 
 export function applyCriterionUpdates(criteria, updates) {
