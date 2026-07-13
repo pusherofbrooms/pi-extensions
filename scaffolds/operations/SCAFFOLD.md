@@ -11,6 +11,4 @@ waitingAllowed: true
 mergePolicy: evidence-first
 ---
 
-Use an operations portfolio loop. Maintain multiple lanes in structured goal notes when useful: facts/evidence for current state, assumptions for expected passive progress, risks for fragile lanes, blockers for stopped lanes, and nextAction for the next trigger. Each continuation: briefly inspect important lanes, repair any critical broken lane if needed, advance one primary lane with a bounded action, record lane health/evidence/next triggers, and stop. Do not let the most urgent lane permanently starve strategic lanes.
-
-When phases are defined, treat them as strategic milestones. Keep lane work inside the current phase, use phase criteria to define the gate, and wait for reviewer verification before the orchestrator advances to the next phase; do not interpret a healthy lane or phase-ready report as overall goal completion.
+Inspect lane health, repair critical regressions, then advance one primary lane. Record current state, trajectory, evidence, and the next trigger. Avoid starving strategic lanes.

@@ -87,6 +87,8 @@ Discovery order (by name override):
 2. User agents: `~/.pi/agent/agents/*.md`
 3. Project agents (optional): `.pi/agents/*.md`
 
+Internal `/goal` protocol roles live separately under `goal-agents/`. They are loaded directly by the goal orchestrator and are not exposed through `/agents`, `/agent`, aliases, or the generic `subagent` tool.
+
 Frontmatter format:
 
 ```md
@@ -142,7 +144,7 @@ Use `/goal status` to inspect progress. The model-facing `goal_phases` tool defi
 
 ### State and execution
 
-The extension stores durable goal state under `~/.pi/agent/goals/` with a single index file mapping projects to current goals. `/goal` command invocations are also recorded as TUI-only chat entries rendered like user messages, without adding command text to the LLM context. It exposes `get_goal`, `goal_note`, `goal_phases`, `goal_criteria`, `goal_criterion_update`, `goal_review`, `goal_block`, and `update_goal` tools. Phases are ordered and evidence-gated; workers may propose readiness, but only reviewer/orchestrator logic advances the current phase. `get_goal` is intended for explicit goal work or autonomous continuation; when the last goal is complete or cleared, it returns a short `NO_ACTIVE_GOAL` response rather than injecting terminal history into unrelated work. `goal_review` accepts structured evidence and per-criterion assessments, so manually recorded terminal reviews use the same evidence model as delegated reviews; it records readiness but `update_goal` remains the explicit completion command. Autonomous continuations run through a bundled `goal-worker` sub-agent in a fresh persisted Pi session so bulky execution context stays out of the parent chat while the raw subagent session remains auditable. The parent extension records each worker report, owns lifecycle state, and queues follow-up worker turns until the goal is complete, paused, blocked, cleared, or max iterations are reached.
+The extension stores durable goal state under `~/.pi/agent/goals/` with a single index file mapping projects to current goals. `/goal` command invocations are also recorded as TUI-only chat entries rendered like user messages, without adding command text to the LLM context. It exposes `get_goal`, `goal_note`, `goal_phases`, `goal_criteria`, `goal_criterion_update`, `goal_review`, `goal_block`, and `update_goal` tools. Phases are ordered and evidence-gated; workers may propose readiness, but only reviewer/orchestrator logic advances the current phase. `get_goal` is intended for explicit goal work or autonomous continuation; when the last goal is complete or cleared, it returns a short `NO_ACTIVE_GOAL` response rather than injecting terminal history into unrelated work. `goal_review` accepts structured evidence and per-criterion assessments, so manually recorded terminal reviews use the same evidence model as delegated reviews; it records readiness but `update_goal` remains the explicit completion command. Autonomous continuations run through an internal goal worker in a fresh persisted Pi session so bulky execution context stays out of the parent chat while the raw subagent session remains auditable. The parent extension records each worker report, owns lifecycle state, and queues follow-up worker turns until the goal is complete, paused, blocked, cleared, or max iterations are reached.
 
 ### Completion and review
 

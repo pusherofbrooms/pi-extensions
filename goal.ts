@@ -21,10 +21,10 @@ const MODULE_DIR = typeof __dirname === "string" ? __dirname : dirname(fileURLTo
 const STORE_DIR = join(homedir(), ".pi", "agent", "goals");
 const GOALS_DIR = join(STORE_DIR, "goals");
 const BUNDLED_SCAFFOLDS_DIR = join(MODULE_DIR, "scaffolds");
-const GOAL_WORKER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-worker.md");
-const GOAL_OBSERVER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-observer.md");
-const GOAL_RESEARCHER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-researcher.md");
-const GOAL_PARENT_REVIEWER_AGENT_PATH = join(MODULE_DIR, "agents", "goal-parent-reviewer.md");
+const GOAL_WORKER_AGENT_PATH = join(MODULE_DIR, "goal-agents", "goal-worker.md");
+const GOAL_OBSERVER_AGENT_PATH = join(MODULE_DIR, "goal-agents", "goal-observer.md");
+const GOAL_RESEARCHER_AGENT_PATH = join(MODULE_DIR, "goal-agents", "goal-researcher.md");
+const GOAL_PARENT_REVIEWER_AGENT_PATH = join(MODULE_DIR, "goal-agents", "goal-parent-reviewer.md");
 const USER_SCAFFOLDS_DIR = join(homedir(), ".pi", "agent", "scaffolds");
 const PROJECT_SCAFFOLDS_DIR = ".pi/scaffolds";
 const INDEX_PATH = join(STORE_DIR, "index.json");
@@ -244,7 +244,7 @@ const FALLBACK_DEFAULT_SCAFFOLD: GoalScaffold = {
   id: "default",
   name: "Default",
   description: "Generic coherent progress for ordinary goals.",
-  body: "Make one coherent unit of progress per continuation. A coherent unit may be a focused change, bounded investigation, review, or small operating cycle. Update durable goal state and stop.",
+  body: "Complete one coherent, bounded unit of progress, record evidence, and stop.",
   source: "bundled",
   policy: { goalShape: "general", workflow: "worker", completionPolicy: "parent-review", blockedPolicy: "external-blocker-only", waitingAllowed: false, mergePolicy: "evidence-first" },
 };
@@ -561,11 +561,9 @@ function scheduledReviewDue(goal: StoredGoal): boolean {
 }
 
 function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan = selectGoalWorkflowPlan(scaffold), priorRoleReports: GoalAgentReport[] = []): string {
-  const requestedAction = workflowPlan.workerAction;
   const contextPacket = buildGoalContextPacket(goalForModel(goal), scaffold, {
     role: "worker",
-    action: requestedAction,
-    scheduledReview: false,
+    action: workflowPlan.workerAction,
     workflow: workflowPlan.workflow,
     workflowRoles: workflowPlan.roles,
     operatingCycle: workflowPlan.operatingCycle === true,
@@ -574,12 +572,17 @@ function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan 
       schemaVersion: 1,
       role: "worker",
       returnOnlyJson: true,
-      allowedOutcomes: ["progress", "no_progress", "waiting", "blocked", "ready_for_review"],
-      lifecycleAuthority: "orchestrator",
+      required: ["schemaVersion", "role", "outcome", "summary", "confidence", "actions", "evidence"],
+      outcomes: ["progress", "no_progress", "waiting", "blocked", "ready_for_review"],
+      conditional: { progress: ["nextAction"], no_progress: ["nextAction"], waiting: ["wait"], blocked: ["blocker"] },
     },
   });
-  return `Execute the next delegated continuation for this autonomous goal.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: ${workflowPlan.roles.join(" -> ")}\n- worker action: ${requestedAction}\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nTurn contract:\n- Follow the selected workflow plan. If prior role reports are present in the context packet, use them as current-state input and avoid repeating their inspection unless verification is needed.\n- Spend your context on the actual work for the next step or scaffold-defined operating cycle.\n- Preserve task fidelity by comparing work against the original objective and current durable state.
-- Work only within the current phase shown in the context packet; do not begin a later phase early.\n- For single-task scaffolds, complete one bounded unit. For operations-style scaffolds, inspect and take all safe, currently available high-value actions until a real wait/resource/uncertainty gate is reached.\n- Do not update goal lifecycle state. The parent owns status, step count, reviews, and completion.\n- If this is complex or long-horizon and no success criteria exist, propose concise criteriaUpdates with operation=add before or alongside substantive progress.\n- If you think the current phase is complete, set outcome to ready_for_review and include concrete evidence; the parent will decide whether this is a phase gate or final completion.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked, ready_for_review.\n{\n  "schemaVersion": 1,\n  "role": "worker",\n  "outcome": "progress",\n  "summary": "concise current state after your work",\n  "confidence": "medium",\n  "actions": [{ "summary": "what you did", "evidence": [{ "kind": "file", "ref": "path", "status": "modified", "summary": "what changed" }] }],\n  "evidence": [{ "kind": "command", "ref": "command run", "status": "passed", "summary": "result" }],\n  "proposedState": {\n    "factsToAdd": ["durable facts"],\n    "assumptionsToAdd": ["assumptions"],\n    "risksToAdd": ["risks"],\n    "blockersToAdd": ["non-terminal blockers/concerns"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "created", "summary": "evidence" }],\n    "checklist": [{ "text": "item", "done": true, "evidence": "brief proof" }]\n  },\n  "criteriaUpdates": [{ "operation": "add", "text": "success criterion", "status": "pending", "evidence": [] }],\n  "blocker": { "reason": "required for blocked", "needed": "what external/user action is needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "next concrete action unless blocked, waiting, or ready_for_review"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `Execute the requested /goal work. Use prior role reports without repeating their inspection unless verification is needed. Work only in the current phase. For operations, continue safe high-value actions until a real wait, resource, or uncertainty gate; otherwise complete one bounded unit. Propose criteria when a complex goal has none. Use ready_for_review when the current phase or goal is proven ready.
+
+Context packet:
+${JSON.stringify(contextPacket)}
+
+Return only GoalAgentReport v1 JSON matching reportContractHint. Optional fields: proposedState, criteriaUpdates, blocker, wait, nextAction. Omit unused fields.`;
 }
 
 function observerPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan = selectGoalWorkflowPlan(scaffold)): string {
@@ -588,16 +591,21 @@ function observerPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan =
     action: "inspect_current_state",
     workflow: workflowPlan.workflow,
     workflowRoles: workflowPlan.roles,
-    operatingCycle: workflowPlan.operatingCycle === true,
     reportContractHint: {
       schemaVersion: 1,
       role: "observer",
       returnOnlyJson: true,
-      allowedOutcomes: ["progress", "no_progress", "waiting", "blocked"],
-      lifecycleAuthority: "orchestrator",
+      required: ["schemaVersion", "role", "outcome", "summary", "confidence", "actions", "evidence"],
+      outcomes: ["progress", "no_progress", "waiting", "blocked"],
+      conditional: { progress: ["inspection evidence", "nextAction"], no_progress: ["nextAction"], waiting: ["wait"], blocked: ["blocker"] },
     },
   });
-  return `Inspect current state for this autonomous goal before worker execution.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: ${workflowPlan.roles.join(" -> ")}\n- observer action: inspect_current_state\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nObserver contract:\n- Inspect stale external, repository, runtime, or project state that may affect the worker's next action.\n- Do not make major changes. Do not edit files, write files, commit, push, deploy, install dependencies, or perform destructive actions.\n- Report current state, bottlenecks, opportunities, risks, evidence, and recommended worker actions using the schema-v1 envelope.\n- Use proposedState.factsToAdd for durable observations, proposedState.risksToAdd for risks, proposedState.blockersToAdd for non-terminal bottlenecks, and nextAction for the recommended worker action.\n- Do not update goal lifecycle state. The parent owns status, reviews, and completion.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked.\n{\n  "schemaVersion": 1,\n  "role": "observer",\n  "outcome": "progress",\n  "summary": "concise current-state observation",\n  "confidence": "medium",\n  "actions": [{ "summary": "inspection performed", "evidence": [{ "kind": "command", "ref": "command run", "status": "passed", "summary": "what was observed" }] }],\n  "evidence": [{ "kind": "observation", "ref": "current state", "status": "observed", "summary": "what this proves" }],\n  "proposedState": {\n    "factsToAdd": ["current-state facts"],\n    "risksToAdd": ["risks"],\n    "blockersToAdd": ["non-terminal bottlenecks"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "observed", "summary": "supporting evidence" }]\n  },\n  "blocker": { "reason": "required for blocked", "needed": "external/user action needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "recommended worker action unless blocked or waiting"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `Inspect current state for the requested /goal action without mutation.
+
+Context packet:
+${JSON.stringify(contextPacket)}
+
+Return only GoalAgentReport v1 JSON matching reportContractHint. Put observations in summary/evidence/factsToAdd, risks in risksToAdd, bottlenecks in blockersToAdd, and the worker recommendation in nextAction. Omit unused fields.`;
 }
 
 function researcherPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan = selectGoalWorkflowPlan(scaffold)): string {
@@ -606,16 +614,21 @@ function researcherPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan
     action: "resolve_uncertainty",
     workflow: workflowPlan.workflow,
     workflowRoles: workflowPlan.roles,
-    operatingCycle: workflowPlan.operatingCycle === true,
     reportContractHint: {
       schemaVersion: 1,
       role: "researcher",
       returnOnlyJson: true,
-      allowedOutcomes: ["progress", "no_progress", "waiting", "blocked"],
-      lifecycleAuthority: "orchestrator",
+      required: ["schemaVersion", "role", "outcome", "summary", "confidence", "actions", "evidence"],
+      outcomes: ["progress", "no_progress", "waiting", "blocked"],
+      conditional: { progress: ["research evidence", "nextAction"], no_progress: ["nextAction"], waiting: ["wait"], blocked: ["blocker"] },
     },
   });
-  return `Research strategy, API, or domain uncertainty for this autonomous goal before worker execution.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: ${workflowPlan.roles.join(" -> ")}\n- researcher action: resolve_uncertainty\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nResearcher contract:\n- Answer bounded strategy, API, domain, or implementation uncertainty that affects the next worker action.\n- Prefer local source/docs/specs. Use lightweight commands only for read-only discovery.\n- Do not mutate project state except through this report. Do not edit files, write files, commit, push, install dependencies, or perform destructive actions.\n- Report findings, open questions, evidence, confidence, recommended doctrine/state updates, and the recommended worker action using the schema-v1 envelope.\n- Use findings for research conclusions, openQuestions for unresolved uncertainty, proposedState.factsToAdd/assumptionsToAdd/risksToAdd for durable state updates, recommendedDoctrine for reusable guidance, and nextAction for the recommended worker action.\n- Do not update goal lifecycle state. The parent owns status, reviews, and completion.\n\nReturn only valid JSON. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run. Allowed outcome values: progress, no_progress, waiting, blocked.\n{\n  "schemaVersion": 1,\n  "role": "researcher",\n  "outcome": "progress",\n  "summary": "concise research result",\n  "confidence": "medium",\n  "actions": [{ "summary": "research performed", "evidence": [{ "kind": "file", "ref": "path", "status": "observed", "summary": "what was learned" }] }],\n  "evidence": [{ "kind": "observation", "ref": "research basis", "status": "observed", "summary": "what this supports" }],\n  "findings": ["research conclusion"],\n  "openQuestions": ["remaining uncertainty, if any"],\n  "recommendedDoctrine": ["reusable guidance, if any"],\n  "proposedState": {\n    "factsToAdd": ["durable facts"],\n    "assumptionsToAdd": ["assumptions"],\n    "risksToAdd": ["risks"],\n    "evidenceToAdd": [{ "kind": "artifact", "ref": "path/id", "status": "observed", "summary": "supporting evidence" }]\n  },\n  "blocker": { "reason": "required for blocked", "needed": "external/user action needed", "evidence": [{ "kind": "observation", "ref": "where observed", "summary": "proof" }] },\n  "wait": { "condition": "required for waiting", "resumeTrigger": "when to resume" },\n  "nextAction": "recommended worker action unless blocked or waiting"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `Resolve the bounded uncertainty for the requested /goal action without mutation.
+
+Context packet:
+${JSON.stringify(contextPacket)}
+
+Return only GoalAgentReport v1 JSON matching reportContractHint. Put conclusions in findings, uncertainty in openQuestions, reusable guidance in recommendedDoctrine, durable updates in proposedState, and the worker recommendation in nextAction. Omit unused fields.`;
 }
 
 async function loadAgentSystemPrompt(path: string): Promise<string> {
@@ -714,16 +727,20 @@ function strategicReviewPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflo
     scheduledReview: true,
     workflow: workflowPlan.workflow,
     workflowRoles: workflowPlan.roles,
-    operatingCycle: workflowPlan.operatingCycle === true,
     reportContractHint: {
       schemaVersion: 1,
       role: "reviewer",
       returnOnlyJson: true,
       requiredOutcome: "review_complete",
-      lifecycleAuthority: "orchestrator",
+      verdicts: ["ready_to_complete", "not_ready", "blocked"],
     },
   });
-  return `Perform a scheduled strategic review for this autonomous goal.\n\nSelected workflow plan:\n- workflow: ${workflowPlan.workflow}\n- roles: reviewer (scheduled strategic review)\n- lifecycle authority: ${workflowPlan.lifecycleAuthority}\n${workflowPlan.fallbackReason ? `- fallback: ${workflowPlan.fallbackReason}\n` : ""}\nContext packet (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nStrategic review contract:\n- This is not a terminal completion review. Its default purpose is to inspect alignment, evidence quality, stale assumptions, blockers, repeated ineffective actions, and the highest-value next focus.\n- Do not modify files or make broad new execution. Use read-only inspection and lightweight commands only when needed to verify state.\n- Use verdict=not_ready with unresolvedGaps/recommended next focus unless the evidence explicitly warrants a terminal completion review next.\n- Even if verdict=ready_to_complete is warranted, the orchestrator records this as a strategic review only; it must not complete the goal by itself.\n- Do not update goal lifecycle state. The parent owns status and completion.\n\nReturn only valid JSON using schemaVersion 1. Use role=reviewer and outcome=review_complete. Evidence objects use kind command|file|test|url|session|observation|artifact and status passed|failed|observed|created|modified|not_run.\n{\n  "schemaVersion": 1,\n  "role": "reviewer",\n  "outcome": "review_complete",\n  "summary": "concise strategic review result",\n  "confidence": "medium",\n  "actions": [{ "summary": "strategic review performed" }],\n  "evidence": [{ "kind": "observation", "ref": "goal state", "status": "observed", "summary": "what was reviewed" }],\n  "verdict": "not_ready",\n  "commentary": "brief strategic review commentary",\n  "findings": ["alignment/evidence/risk finding"],\n  "criteriaAssessment": [{ "id": "CRIT-001", "status": "not_proven", "reason": "why", "evidence": [] }],\n  "unresolvedGaps": ["recommended next focus or remaining gap"],\n  "scopeConcerns": [],\n  "nextAction": "recommended next worker action"\n}\n\nOmit optional fields that are not useful. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `Perform a read-only strategic review of alignment, evidence, stale assumptions, repeated ineffective actions, risks, and next focus. This review cannot complete the goal; normally use not_ready and identify the next gap.
+
+Context packet:
+${JSON.stringify(contextPacket)}
+
+Return only GoalAgentReport v1 reviewer JSON matching reportContractHint with outcome=review_complete, summary, confidence, actions, evidence, verdict, findings, criteriaAssessment (empty if not used), and nextAction. Non-ready verdicts require unresolvedGaps.`;
 }
 
 async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
@@ -742,20 +759,28 @@ async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaff
 }
 
 function parentReviewPrompt(goal: StoredGoal, workerReport: GoalAgentReport, scaffold: GoalScaffold): string {
+  const phaseGate = Boolean(nextGoalPhase(goalForModel(goal)));
   const contextPacket = buildGoalContextPacket(goalForModel(goal), scaffold, {
     role: "reviewer",
-    action: "parent_completion_review",
+    action: phaseGate ? "phase_gate_review" : "terminal_review",
     reportContractHint: {
       schemaVersion: 1,
       role: "reviewer",
       returnOnlyJson: true,
       requiredOutcome: "review_complete",
-      lifecycleAuthority: "orchestrator",
+      verdicts: ["ready_to_complete", "not_ready", "blocked"],
+      assessEveryCurrentCriterion: true,
     },
   });
-  const phaseGate = Boolean(nextGoalPhase(goalForModel(goal)));
-  return `A delegated goal worker believes the current ${phaseGate ? "phase" : "goal"} is ready for review. Perform a concise parent-side verification pass.\n\nContext packet after worker report (authoritative structured JSON):\n${JSON.stringify(contextPacket, null, 2)}\n\nHuman-readable goal snapshot (secondary; use context packet above for auditability):\n${renderGoalForModel(goal)}\n\nWorker report:\n${JSON.stringify(workerReport, null, 2)}\n\nVerification contract:\n- Compare the objective, criteria, evidence, checklist, and worker report.\n- Inspect files or run lightweight commands only if needed to verify concrete claims.\n- Do not modify files.\n- Return not_ready if required evidence is missing, criteria are not actually satisfied, or verification is uncertain.\n- Assess every current criterion exactly once in criteriaAssessment; use the criterion ids from the context packet.\n- Return ${phaseGate ? "ready_to_complete only when the current phase is proven complete, include phaseTransition.toPhaseId for the immediate next phase, and do not complete the overall goal" : "ready_to_complete only if the goal is genuinely done and each criterion assessment is proven with concrete evidence"}.\n- Include brief commentary suitable to show the user when the goal completes or needs more work.\n\nReturn only valid JSON using schemaVersion 1. Use role=reviewer and outcome=review_complete.\n{\n  "schemaVersion": 1,\n  "role": "reviewer",\n  "outcome": "review_complete",\n  "summary": "concise review result",\n  "confidence": "medium",\n  "actions": [{ "summary": "verification performed" }],\n  "evidence": [{ "kind": "observation", "ref": "goal state", "status": "observed", "summary": "what proves the verdict" }],\n  "verdict": "ready_to_complete",\n  "commentary": "brief user-facing parent commentary",\n  "findings": ["..."],\n  "criteriaAssessment": [{ "id": "CRIT-001", "status": "proven", "reason": "why", "evidence": [{ "kind": "test", "ref": "command", "status": "passed", "summary": "proof" }] }],
-  "phaseTransition": { "toPhaseId": "next phase id", "evidence": [{ "kind": "observation", "ref": "phase gate", "status": "passed", "summary": "proof" }] },\n  "unresolvedGaps": ["required unless ready_to_complete"],\n  "scopeConcerns": []\n}\n\nOmit unresolvedGaps when ready_to_complete. Do not include Markdown. Do not include commentary outside the JSON object.`;
+  return `Verify the worker's readiness claim using read-only inspection or lightweight checks as needed. Assess every current criterion exactly once. Return ready_to_complete only when each is proven by concrete evidence. ${phaseGate ? "For a ready phase gate, include phaseTransition.toPhaseId for the immediate next phase; this does not complete the goal." : "For a terminal review, verify the whole objective."}
+
+Context packet:
+${JSON.stringify(contextPacket)}
+
+Worker report:
+${JSON.stringify(workerReport)}
+
+Return only GoalAgentReport v1 reviewer JSON matching reportContractHint with outcome=review_complete, summary, confidence, actions, evidence, verdict, findings, and criteriaAssessment[{id,status,reason,evidence}]. Non-ready verdicts require unresolvedGaps; ready verdicts must omit them. Optional: commentary, scopeConcerns, phaseTransition.`;
 }
 
 async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, scaffold: GoalScaffold, ctx: ExtensionContext, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {

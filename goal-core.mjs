@@ -244,10 +244,16 @@ export function buildGoalContextPacket(goal, scaffold, request = {}) {
       operatingCycle: request.operatingCycle === true,
       priorRoleReports: Array.isArray(request.priorRoleReports) ? request.priorRoleReports : [],
     },
-    reportContractHint: request.reportContractHint ?? {
+    reportContractHint: {
       schemaVersion: 1,
       returnOnlyJson: true,
       lifecycleAuthority: "orchestrator",
+      evidence: {
+        required: ["kind", "ref", "summary"],
+        kinds: ["command", "file", "test", "url", "session", "observation", "artifact"],
+        statuses: ["passed", "failed", "observed", "created", "modified", "not_run"],
+      },
+      ...(request.reportContractHint ?? {}),
     },
   };
 }

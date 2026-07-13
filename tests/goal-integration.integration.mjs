@@ -92,7 +92,7 @@ function registeredExtension() {
 
 test("worker continuation persists checkpoints, iteration, and session reference", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "goal-integration-"));
-  const { deps, writes } = memoryDeps([report("worker")]);
+  const { deps, writes, prompts } = memoryDeps([report("worker")]);
   const pi = api();
   await runDelegatedContinuation(pi, context(cwd), {
     id: "goal-worker",
@@ -121,6 +121,9 @@ test("worker continuation persists checkpoints, iteration, and session reference
   assert.equal(saved.roleCheckpoints.at(-1).sessionFile, "fake-session-1.json");
   assert.deepEqual(saved.iterations.at(-1).sessionRefs[0].sessionFile, "fake-session-1.json");
   assert.match(pi.messages.at(-1).content, /Delegated goal step 1/);
+  assert.match(prompts[0], /reportContractHint/);
+  assert.doesNotMatch(prompts[0], /Human-readable goal snapshot/);
+  assert.doesNotMatch(prompts[0], /"outcome": "progress"/);
 });
 
 test("observer report is checkpointed and handed to the worker", async () => {
