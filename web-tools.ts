@@ -1,10 +1,12 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
   truncateHead,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
+import { Defuddle } from "defuddle/node";
+import { parseHTML } from "linkedom";
 import { Type } from "typebox";
 import { lookup } from "node:dns/promises";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -297,39 +299,50 @@ function decodeEntities(text: string): string {
     .replace(/&#39;/gi, "'");
 }
 
-function htmlToText(html: string): string {
-  const noScripts = html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
-    .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, " ");
+export type ExtractedPage = {
+  title?: string;
+  author?: string;
+  published?: string;
+  site?: string;
+  description?: string;
+  markdown: string;
+};
 
-  const withBreaks = noScripts
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<\/h[1-6]>/gi, "\n\n")
-    .replace(/<\/li>/gi, "\n")
-    .replace(/<\/div>/gi, "\n");
-
-  const stripped = withBreaks.replace(/<[^>]+>/g, " ");
-  return decodeEntities(stripped)
-    .replace(/\r/g, "")
-    .replace(/[ \t]+/g, " ")
-    .split("\n")
-    .map((line) => line.trim())
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+export function defuddleOptionsForUrl(url: string) {
+  const hostname = new URL(url).hostname.toLowerCase();
+  const isWikipedia = hostname === "wikipedia.org" || hostname.endsWith(".wikipedia.org");
+  return {
+    markdown: true as const,
+    useAsync: false,
+    // Work around Defuddle 0.19.1 dropping later Wikipedia sections after 43cc4cb.
+    ...(isWikipedia ? { removeContentPatterns: false } : {}),
+  };
 }
 
-function extractTitle(html: string): string | undefined {
-  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (!match) return undefined;
-  return decodeEntities(match[1].replace(/\s+/g, " ").trim());
+export async function extractWithDefuddle(html: string, url: string): Promise<ExtractedPage> {
+  const { document } = parseHTML(html);
+  const result = await Defuddle(document, url, defuddleOptionsForUrl(url));
+  const markdown = result.content?.trim();
+  if (!markdown) {
+    throw new Error("Defuddle found no readable content. Use agent-browser for this page.");
+  }
+  return {
+    title: result.title || undefined,
+    author: result.author || undefined,
+    published: result.published || undefined,
+    site: result.site || undefined,
+    description: result.description || undefined,
+    markdown,
+  };
 }
 
-async function fetchPage(url: string, signal?: AbortSignal): Promise<{
+export async function fetchPage(url: string, signal?: AbortSignal): Promise<{
   url: string;
   title?: string;
+  author?: string;
+  published?: string;
+  site?: string;
+  description?: string;
   contentType: string;
   status: number;
   text: string;
@@ -377,8 +390,8 @@ async function fetchPage(url: string, signal?: AbortSignal): Promise<{
     const body = await response.text();
 
     const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml+xml");
-    const extractedText = isHtml ? htmlToText(body) : body;
-    const title = isHtml ? extractTitle(body) : undefined;
+    const extracted = isHtml ? await extractWithDefuddle(body, response.url || currentUrl.toString()) : undefined;
+    const extractedText = extracted?.markdown ?? body;
 
     const truncation = truncateHead(extractedText, {
       maxBytes: DEFAULT_MAX_BYTES,
@@ -395,7 +408,11 @@ async function fetchPage(url: string, signal?: AbortSignal): Promise<{
 
     return {
       url: response.url,
-      title,
+      title: extracted?.title,
+      author: extracted?.author,
+      published: extracted?.published,
+      site: extracted?.site,
+      description: extracted?.description,
       contentType,
       status: response.status,
       text: truncation.content,
@@ -466,8 +483,8 @@ export default function (pi: ExtensionAPI) {
     name: "fetch_page",
     label: "Fetch Page",
     description:
-      "Fetch a public HTTP(S) URL and extract readable text. Includes SSRF protections (blocks localhost/private IP targets). Output is truncated to 50KB/2000 lines.",
-    promptSnippet: "Fetch a public HTTP(S) URL and extract readable text content with SSRF-safe validation.",
+      "Fetch a public HTTP(S) page and extract its main content as Markdown with Defuddle. Best for articles and documentation; does not execute JavaScript. Includes SSRF protections. Use agent-browser for interactive or client-rendered pages.",
+    promptSnippet: "Fetch a public page and extract high-quality main content as Markdown; use agent-browser when JavaScript or interaction is required.",
     parameters: Type.Object({
       url: Type.String({ description: "HTTP or HTTPS URL to fetch" }),
     }),
@@ -476,6 +493,9 @@ export default function (pi: ExtensionAPI) {
       const header = [
         `Fetched: ${page.url}`,
         page.title ? `Title: ${page.title}` : undefined,
+        page.author ? `Author: ${page.author}` : undefined,
+        page.published ? `Published: ${page.published}` : undefined,
+        page.site ? `Site: ${page.site}` : undefined,
         `Status: ${page.status}`,
         `Content-Type: ${page.contentType || "unknown"}`,
       ]
@@ -491,6 +511,10 @@ export default function (pi: ExtensionAPI) {
         details: {
           url: page.url,
           title: page.title,
+          author: page.author,
+          published: page.published,
+          site: page.site,
+          description: page.description,
           status: page.status,
           contentType: page.contentType,
           truncated: page.truncated,

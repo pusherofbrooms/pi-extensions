@@ -44,7 +44,7 @@ Adds a command named **`show-system-prompt`**.
 Adds two tools:
 
 - **`web_search`**: web search with provider selection via env var
-- **`fetch_page`**: fetches a public URL and extracts readable text
+- **`fetch_page`**: fetches a public URL and extracts its main content as Markdown with Defuddle
 
 ### `web_search` providers
 Set `WEB_SEARCH_PROVIDER` to one of:
@@ -66,7 +66,11 @@ Optional:
 - validates DNS resolution to avoid private-network hosts
 - only allows `http` / `https`
 
-Output is truncated to Pi defaults (about 50KB / 2000 lines), with full text saved to a temp file when truncation occurs.
+HTML pages are parsed with Defuddle and LinkeDOM without executing JavaScript. Defuddle's optional third-party fallback services are disabled. Interactive and client-rendered pages should use `agent-browser` instead.
+
+As a temporary workaround for a Defuddle 0.19.1 regression introduced by commit `43cc4cb`, content-pattern removal is disabled for Wikipedia domains so later article sections are retained.
+
+Output is truncated to Pi defaults (about 50KB / 2000 lines), with full Markdown saved to a temp file when truncation occurs.
 
 ## 3) `subagents`
 Adds a subagent tool and command helpers:
