@@ -42,13 +42,57 @@ function getTimeoutMs(): number {
   return Math.max(2_000, Math.min(60_000, Math.floor(raw)));
 }
 
+function configuredAllowedHosts(): string[] | undefined {
+  const raw = process.env.WEB_FETCH_ALLOWED_HOSTS?.trim();
+  if (!raw) return undefined;
+  return raw.split(",").map((pattern) => pattern.trim()).filter(Boolean);
+}
+
+export function isHostnameAllowed(hostname: string, patterns: readonly string[] | undefined): boolean {
+  if (patterns === undefined) return true;
+  const normalizedHostname = hostname.toLowerCase().replace(/\.$/, "");
+  const normalizedPatterns = patterns.map((rawPattern) => {
+    const lowerPattern = rawPattern.toLowerCase();
+    if (lowerPattern === "*.") throw new Error(`Invalid WEB_FETCH_ALLOWED_HOSTS pattern: ${rawPattern}`);
+    const pattern = lowerPattern.replace(/\.$/, "");
+    if (pattern === "*") return pattern;
+    const wildcardSuffix = pattern.startsWith("*.") ? pattern.slice(2) : undefined;
+    const candidate = wildcardSuffix ?? pattern;
+    if (
+      !candidate ||
+      (pattern !== "*" && pattern.includes("*") && wildcardSuffix === undefined) ||
+      candidate.includes("*") ||
+      candidate.includes(":") ||
+      candidate.includes("/") ||
+      candidate.includes("?")
+    ) {
+      throw new Error(`Invalid WEB_FETCH_ALLOWED_HOSTS pattern: ${rawPattern}`);
+    }
+    return pattern;
+  });
+
+  return normalizedPatterns.some((pattern) => {
+    if (pattern === "*") return true;
+    if (pattern.startsWith("*.")) {
+      const suffix = pattern.slice(2);
+      return normalizedHostname !== suffix && normalizedHostname.endsWith(`.${suffix}`);
+    }
+    return normalizedHostname === pattern;
+  });
+}
+
 function isPrivateIp(ip: string): boolean {
-  if (ip.includes(":")) {
-    const normalized = ip.toLowerCase();
-    return normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
+  const normalized = ip.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized.includes(":")) {
+    if (normalized === "::" || normalized === "::1") return true;
+    if (/^f[cd]/.test(normalized) || /^fe[89ab]/.test(normalized)) return true;
+    // IPv4-mapped IPv6 can represent private IPv4 in several equivalent forms;
+    // block the whole mapped range rather than risk alternate-notation bypasses.
+    if (normalized.startsWith("::ffff:")) return true;
+    return false;
   }
 
-  const parts = ip.split(".").map((p) => Number(p));
+  const parts = normalized.split(".").map((p) => Number(p));
   if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return true;
 
   const [a, b] = parts;
@@ -62,13 +106,16 @@ function isPrivateIp(ip: string): boolean {
   return false;
 }
 
-async function assertSafePublicUrl(input: string): Promise<URL> {
+async function assertSafePublicUrl(input: string, allowedHosts: readonly string[] | undefined): Promise<URL> {
   const url = new URL(input);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`Unsupported protocol: ${url.protocol}`);
   }
 
   const hostname = url.hostname.toLowerCase();
+  if (!isHostnameAllowed(hostname, allowedHosts)) {
+    throw new Error(`Hostname is not allowed by WEB_FETCH_ALLOWED_HOSTS: ${hostname}`);
+  }
   if (BLOCKED_HOSTS.has(hostname) || hostname.endsWith(".local")) {
     throw new Error(`Blocked hostname: ${hostname}`);
   }
@@ -336,7 +383,11 @@ export async function extractWithDefuddle(html: string, url: string): Promise<Ex
   };
 }
 
-export async function fetchPage(url: string, signal?: AbortSignal): Promise<{
+export interface FetchPageOptions {
+  allowedHosts?: readonly string[];
+}
+
+export async function fetchPage(url: string, signal?: AbortSignal, options: FetchPageOptions = {}): Promise<{
   url: string;
   title?: string;
   author?: string;
@@ -355,7 +406,8 @@ export async function fetchPage(url: string, signal?: AbortSignal): Promise<{
   const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
 
   try {
-    let currentUrl = await assertSafePublicUrl(url);
+    const allowedHosts = options.allowedHosts ?? configuredAllowedHosts();
+    let currentUrl = await assertSafePublicUrl(url, allowedHosts);
     let response: Response | undefined;
 
     for (let redirects = 0; redirects <= 5; redirects++) {
@@ -373,7 +425,7 @@ export async function fetchPage(url: string, signal?: AbortSignal): Promise<{
 
       const location = response.headers.get("location");
       if (!location) break;
-      currentUrl = await assertSafePublicUrl(new URL(location, currentUrl).toString());
+      currentUrl = await assertSafePublicUrl(new URL(location, currentUrl).toString(), allowedHosts);
     }
 
     if (!response) throw new Error("No response received.");
@@ -483,7 +535,7 @@ export default function (pi: ExtensionAPI) {
     name: "fetch_page",
     label: "Fetch Page",
     description:
-      "Fetch a public HTTP(S) page and extract its main content as Markdown with Defuddle. Best for articles and documentation; does not execute JavaScript. Includes SSRF protections. Use agent-browser for interactive or client-rendered pages.",
+      "Fetch an allowed public HTTP(S) page and extract its main content as Markdown with Defuddle. Best for articles and documentation; does not execute JavaScript. Includes SSRF protections and honors WEB_FETCH_ALLOWED_HOSTS when configured. Use agent-browser for interactive or client-rendered pages.",
     promptSnippet: "Fetch a public page and extract high-quality main content as Markdown; use agent-browser when JavaScript or interaction is required.",
     parameters: Type.Object({
       url: Type.String({ description: "HTTP or HTTPS URL to fetch" }),

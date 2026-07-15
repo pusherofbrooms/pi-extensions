@@ -58,9 +58,20 @@ Optional:
 
 - `WEB_TOOL_TIMEOUT_MS` (default `15000`)
 - `WEB_TOOL_USER_AGENT`
+- `WEB_FETCH_ALLOWED_HOSTS` (comma-separated fetch allowlist; unset or empty allows all public hosts)
+
+### Fetch host allowlist
+
+By default, `fetch_page` may fetch any public HTTP(S) host. Set `WEB_FETCH_ALLOWED_HOSTS` to restrict it:
+
+```bash
+export WEB_FETCH_ALLOWED_HOSTS="docs.github.com,*.wikipedia.org,developer.mozilla.org"
+```
+
+Entries are either exact hostnames or `*.` subdomain patterns. `*.wikipedia.org` allows hosts such as `en.wikipedia.org`, but not the apex `wikipedia.org`; list the apex separately if needed. A lone `*` explicitly allows every public host. Schemes, paths, ports, and other glob forms are rejected. The allowlist is checked for the initial URL and every redirect.
 
 ### Safety behavior
-`fetch_page` includes SSRF protections:
+`fetch_page` includes SSRF protections in addition to the optional allowlist:
 
 - blocks localhost / private IP targets
 - validates DNS resolution to avoid private-network hosts
