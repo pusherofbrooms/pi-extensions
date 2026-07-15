@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { spawn } from "node:child_process";
 import { open, readFile, realpath, type FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 const CONFIG_PATH = join(getAgentDir(), "bash-read-only.json");
 const SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -57,20 +57,76 @@ function journalAllowed(args: readonly string[]): boolean {
   return bounded && noPager;
 }
 
+function splitGitArgs(args: readonly string[]): { globals: string[]; command: string[] } | undefined {
+  const globals: string[] = [];
+  let i = 0;
+  while (i < args.length) {
+    if (args[i] === "--no-pager") { globals.push(args[i++]); continue; }
+    if (args[i] === "-C") {
+      if (i + 1 >= args.length) return undefined;
+      globals.push(args[i], args[i + 1]); i += 2; continue;
+    }
+    break;
+  }
+  return { globals, command: args.slice(i) };
+}
+
 export function buildGitArgs(args: readonly string[]): string[] {
-  const disableContentDrivers = ["diff", "log", "show"].includes(args[0]) ? ["--no-ext-diff", "--no-textconv"] : [];
-  return ["--no-pager", "-c", "core.fsmonitor=false", ...args.slice(0, 1), ...disableContentDrivers, ...args.slice(1)];
+  const parsed = splitGitArgs(args);
+  if (!parsed) return [...args];
+  const [sub, ...rest] = parsed.command;
+  const disableContentDrivers = ["diff", "log", "show"].includes(sub) ? ["--no-ext-diff", "--no-textconv"] : [];
+  return ["--no-pager", "-c", "core.fsmonitor=false", ...parsed.globals, sub, ...disableContentDrivers, ...rest];
 }
 
 function gitAllowed(args: readonly string[]): boolean {
-  if (!args.length) return false;
-  const sub = args[0], rest = args.slice(1);
+  const parsed = splitGitArgs(args);
+  if (!parsed || !parsed.command.length) return false;
+  const [sub, ...rest] = parsed.command;
   if (sub === "status") return all(rest, /^(--short|-s|--branch|-b|--porcelain(?:=v[12])?|--untracked-files=(?:no|normal|all)|--ignored(?:=(?:traditional|matching|no))?)$/);
   if (sub === "branch") return all(rest, /^(--list|-l|--all|-a|--remotes|-r|--verbose|-v|-vv|--no-color)$/);
   if (sub === "rev-parse") return rest.length > 0 && all(rest, /^(--show-toplevel|--show-prefix|--is-inside-work-tree|--is-bare-repository|--git-dir|--abbrev-ref|--verify|HEAD|[A-Za-z0-9._\/-]+(?:\^\{(?:commit|tree|tag|object)\})?)$/);
   if (!["log", "show", "diff"].includes(sub)) return false;
   const option = /^(--oneline|--stat|--shortstat|--name-only|--name-status|--summary|--no-color|--decorate(?:=short|=full|=auto|=no)?|--reverse|--patch|-p|-U\d{1,3}|--unified=\d{1,3}|-[n]?\d{1,4}|--max-count=\d{1,4}|--since=.{1,128}|--until=.{1,128}|--)$/;
   return all(rest, /^(--oneline|--stat|--shortstat|--name-only|--name-status|--summary|--no-color|--decorate(?:=short|=full|=auto|=no)?|--reverse|--patch|-p|-U\d{1,3}|--unified=\d{1,3}|-[n]?\d{1,4}|--max-count=\d{1,4}|--since=.{1,128}|--until=.{1,128}|--|HEAD|[A-Za-z0-9._\/-]+(?:\.{2,3}[A-Za-z0-9._\/-]+)?|:\/?[A-Za-z0-9._\/-]+)$/) && rest.every((arg) => !arg.startsWith("-") || option.test(arg));
+}
+
+function findAllowed(args: readonly string[]): boolean {
+  const dangerous = new Set(["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls", "-files0-from"]);
+  if (!args.length || args.some((arg) => dangerous.has(arg))) return false;
+  let i = 0;
+  while (i < args.length && ["-H", "-L", "-P"].includes(args[i])) i++;
+  let roots = 0;
+  while (i < args.length && !args[i].startsWith("-") && !["!", "(", ")"].includes(args[i])) { roots++; i++; }
+  if (!roots) return false;
+
+  const valuePrimaries = new Set(["-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-size", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-user", "-group", "-uid", "-gid", "-perm", "-links", "-printf"]);
+  const nullary = new Set(["-empty", "-readable", "-true", "-false", "-print", "-print0", "-ls"]);
+  const numeric = new Set(["-maxdepth", "-mindepth"]);
+  const primary = (): boolean => {
+    const token = args[i++];
+    if (token === "(") { if (!expression() || args[i++] !== ")") return false; return true; }
+    if (nullary.has(token)) return true;
+    if (numeric.has(token)) return i < args.length && /^\d+$/.test(args[i++]);
+    if (token === "-type" || token === "-xtype") return i < args.length && /^[bcdpflsD]$/.test(args[i++]);
+    if (valuePrimaries.has(token)) return i < args.length && Boolean(args[i++]);
+    return false;
+  };
+  const negation = (): boolean => { while (["!", "-not"].includes(args[i])) i++; return primary(); };
+  const conjunction = (): boolean => {
+    if (!negation()) return false;
+    while (i < args.length && args[i] !== ")" && !["-o", "-or"].includes(args[i])) {
+      if (["-a", "-and"].includes(args[i])) i++;
+      if (!negation()) return false;
+    }
+    return true;
+  };
+  function expression(): boolean {
+    if (!conjunction()) return false;
+    while (["-o", "-or"].includes(args[i])) { i++; if (!conjunction()) return false; }
+    return true;
+  }
+  return i === args.length || expression() && i === args.length;
 }
 
 export function isBuiltInAllowed(executable: string, args: readonly string[]): boolean {
@@ -87,6 +143,7 @@ export function isBuiltInAllowed(executable: string, args: readonly string[]): b
     case "date": return all(args, /^(?:-u|--utc|--universal|--iso-8601(?:=(?:date|hours|minutes|seconds|ns))?|--rfc-3339=(?:date|seconds|ns)|--rfc-email|\+[^\r\n]{1,256})$/);
     case "tail": return tailAllowed(args);
     case "journalctl": return journalAllowed(args);
+    case "find": return findAllowed(args);
     case "git": return gitAllowed(args);
     default: return false;
   }
@@ -95,8 +152,6 @@ export function isBuiltInAllowed(executable: string, args: readonly string[]): b
 export function isConfiguredAllowed(executable: string, args: readonly string[], rules: readonly ReadOnlyRule[]): boolean {
   return rules.some((rule) => rule.executable === executable && Array.isArray(rule.args) && rule.args.length === args.length && rule.args.every((arg, i) => arg === args[i]));
 }
-export function isConfined(root: string, candidate: string): boolean { const rel = relative(root, candidate); return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)); }
-
 async function loadRules(): Promise<ReadOnlyRule[]> {
   try {
     const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf8")) as Config;
@@ -104,7 +159,7 @@ async function loadRules(): Promise<ReadOnlyRule[]> {
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw new Error(`Invalid trusted bash_read_only config ${CONFIG_PATH}: ${(error as Error).message}`); }
 }
 
-async function prepareTailFiles(root: string, args: readonly string[]): Promise<{ args: string[]; handles: FileHandle[] }> {
+async function prepareTailFiles(cwd: string, args: readonly string[]): Promise<{ args: string[]; handles: FileHandle[] }> {
   let after = false;
   const prepared: string[] = [];
   const handles: FileHandle[] = [];
@@ -114,8 +169,7 @@ async function prepareTailFiles(root: string, args: readonly string[]): Promise<
       if (arg === "--") { after = true; prepared.push(arg); continue; }
       if (!after && (arg === "-n" || arg === "--lines")) { prepared.push(arg, args[++i]); continue; }
       if (!after && (arg.startsWith("--lines=") || /^-\d+$/.test(arg))) { prepared.push(arg); continue; }
-      const resolved = await realpath(isAbsolute(arg) ? arg : join(root, arg));
-      if (!isConfined(root, resolved)) throw new Error(`tail path escapes session cwd: ${arg}`);
+      const resolved = await realpath(isAbsolute(arg) ? arg : join(cwd, arg));
       const handle = await open(resolved, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       const stat = await handle.stat();
       if (!stat.isFile()) { await handle.close(); throw new Error(`tail path is not a regular file: ${arg}`); }
@@ -136,8 +190,7 @@ export async function executeReadOnly(executable: string, args: string[], reques
   const rules = options.allowGlobalAdditions === false ? [] : await loadRules();
   if (!isBuiltInAllowed(executable, args) && !isConfiguredAllowed(executable, args, rules)) throw new Error(`Denied read-only command: ${executable}`);
   const root = await realpath(sessionCwd), cwd = await realpath(requestedCwd ? (isAbsolute(requestedCwd) ? requestedCwd : join(root, requestedCwd)) : root);
-  if (!isConfined(root, cwd)) throw new Error("cwd must remain within the session cwd");
-  const tail = executable === "tail" ? await prepareTailFiles(root, args) : undefined;
+  const tail = executable === "tail" ? await prepareTailFiles(cwd, args) : undefined;
   const commandArgs = executable === "git" ? buildGitArgs(args) : tail?.args ?? args;
 
   return await new Promise((resolve, reject) => {
@@ -164,7 +217,7 @@ export async function executeReadOnly(executable: string, args: string[], reques
 
 export function createBashReadOnlyExtension(options: BashReadOnlyOptions = {}) {
   return function bashReadOnlyExtension(pi: ExtensionAPI) {
-    pi.registerTool({ name: "bash_read_only", label: "Bash (read only)", description: "Run a deny-by-default inspection command as a structured executable and argument array. No shell, pipes, redirects, or executable paths.", parameters: Type.Object({ executable: Type.String(), args: Type.Array(Type.String(), { maxItems: MAX_ARGS }), cwd: Type.Optional(Type.String()), timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 30000 })) }), async execute(_id, params, signal, _update, ctx) { const result = await executeReadOnly(params.executable, params.args, params.cwd, ctx.cwd, params.timeoutMs, signal, options); const reason = result.reason ? `; ${result.reason}` : ""; return { content: [{ type: "text", text: `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}${result.truncated ? "\n[output truncated]" : ""}\n[exit ${result.code ?? "signal"}${reason}]` }], details: result }; } });
+    pi.registerTool({ name: "bash_read_only", label: "Bash (read only)", description: "Run a mostly-safe, deny-by-default inspection command as a structured executable and argument array. Primarily non-mutating, but inspection can have incidental side effects; this is not a sandbox. Explicit readable paths outside cwd are allowed. No shell, pipes, redirects, or executable paths.", parameters: Type.Object({ executable: Type.String(), args: Type.Array(Type.String(), { maxItems: MAX_ARGS }), cwd: Type.Optional(Type.String()), timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 30000 })) }), async execute(_id, params, signal, _update, ctx) { const result = await executeReadOnly(params.executable, params.args, params.cwd, ctx.cwd, params.timeoutMs, signal, options); const reason = result.reason ? `; ${result.reason}` : ""; return { content: [{ type: "text", text: `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}${result.truncated ? "\n[output truncated]" : ""}\n[exit ${result.code ?? "signal"}${reason}]` }], details: result }; } });
   };
 }
 export default createBashReadOnlyExtension();

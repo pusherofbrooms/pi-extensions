@@ -42,7 +42,7 @@ Adds a command named **`show-system-prompt`**.
   - `.pi/system-prompt.snapshot.md` (under current working directory)
 
 ## 2) `bash-read-only`
-Adds **`bash_read_only`**, a structured inspection tool taking `executable`, `args`, and optional `cwd`/`timeoutMs`. It never invokes a shell and denies commands by default. Explicit argument policies cover `ps`, `vmstat`, `uptime`, `uname`, `df`, `free`, `who`, `id`, display-only `date`, bounded `tail` (at most 10,000 lines), bounded query-only `journalctl` (at most 1,000 entries with `--no-pager`), and constrained Git inspection. Executable paths, follow/streaming and write modes, cwd escapes (including symlinks), unsafe inherited environment variables, Git external execution, excessive runtime, and excessive output are blocked. `tail` files must resolve beneath the session cwd.
+Adds **`bash_read_only`**, a structured, mostly-safe inspection tool taking `executable`, `args`, and optional `cwd`/`timeoutMs`. It never invokes a shell and denies commands by default. Explicit argument policies cover `ps`, `vmstat`, `uptime`, `uname`, `df`, `free`, `who`, `id`, display-only `date`, bounded `tail` (at most 10,000 lines), bounded query-only `journalctl` (at most 1,000 entries with `--no-pager`), a conservative positive grammar for stdout-only `find` (dangerous action tokens are rejected anywhere in its argument vector), and constrained Git inspection (including leading `-C <dir>` and `--no-pager`). Explicit readable paths and working directories outside the session cwd are permitted; OS permissions govern access. Executable paths, follow/streaming and write modes, unsafe inherited environment variables, Git external execution, excessive runtime, and excessive output are blocked.
 
 Trusted user-global additions may be placed in `~/.pi/agent/bash-read-only.json`; project configuration is intentionally ignored. Additions match the complete argument vector exactly and executable values must be command names resolved only through the fixed system PATH. An addition is an explicit grant to execute that exact command, not proof that the executable is read-only, so add only programs and arguments you trust:
 
@@ -54,7 +54,7 @@ Trusted user-global additions may be placed in `~/.pi/agent/bash-read-only.json`
 }
 ```
 
-The normal Pi session registers this tool as an extension and may use trusted global additions. Isolated `/goal` observer, researcher, and reviewer sessions receive a factory-configured instance named `goal-bash-read-only` while extension discovery and global additions remain disabled; the goal worker retains ordinary `bash` for implementation. This is a defense-in-depth command policy, not an OS sandbox.
+The normal Pi session registers this tool as an extension and may use trusted global additions. Isolated `/goal` observer, researcher, and reviewer sessions receive a factory-configured instance named `goal-bash-read-only` while extension discovery and global additions remain disabled; the goal worker retains ordinary `bash` for implementation. The policy is primarily non-mutating, but inspection commands can have incidental side effects (for example filesystem access-time updates or Git implementation details). This is a defense-in-depth command policy, not an OS sandbox.
 
 ## 3) `web-tools`
 Adds two tools:
