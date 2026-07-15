@@ -12,7 +12,7 @@ import {
 import { defaultAgentRunUsage, runAgentSession } from "./agent-runner.ts";
 import { Type } from "typebox";
 
-type AgentScope = "user" | "project" | "both";
+export type AgentScope = "user" | "project" | "both";
 
 interface AgentConfig {
 	name: string;
@@ -183,6 +183,32 @@ function getToolNames(names?: string[]) {
 	return names && names.length > 0 ? names : ["read", "bash", "edit", "write", "grep", "find", "ls"];
 }
 
+export interface AgentCapability {
+	name: string;
+	description: string;
+	tools: string[];
+	source: "user" | "project" | "default";
+}
+
+export function enumerateAgentCapabilities(cwd: string, scope: AgentScope = "user"): AgentCapability[] {
+	return discoverAgents(cwd, scope).agents.map((agent) => ({
+		name: agent.name,
+		description: agent.description,
+		tools: getToolNames(agent.tools),
+		source: agent.source,
+	}));
+}
+
+export function formatAgentCapabilities(capabilities: AgentCapability[]): string {
+	if (capabilities.length === 0) return "Available agents: none.";
+	return [
+		"Available agents (use only these exact names and assign tasks compatible with their tools):",
+		...capabilities.map(
+			(agent) => `- ${agent.name} (${agent.source}) — ${agent.description}; tools: ${agent.tools.join(", ")}`,
+		),
+	].join("\n");
+}
+
 function formatAgentList(agents: AgentConfig[]): string {
 	if (agents.length === 0) return "none";
 	return agents.map((a) => `${a.name} (${a.source})`).join(", ");
@@ -326,6 +352,7 @@ const SubagentParams = Type.Object({
 
 export default function (pi: ExtensionAPI) {
 	const registeredAliasCommands = new Set<string>();
+	const agentCapabilityDescription = formatAgentCapabilities(enumerateAgentCapabilities(process.cwd(), "both"));
 	const reservedCommandNames = new Set(["agent", "agents", "subagent"]);
 
 	const runAgentCommand = async (agentName: string, task: string, ctx: any) => {
@@ -456,9 +483,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description:
+		description: [
 			"Delegate tasks to specialized subagents with isolated in-memory context. Modes: single (agent+task), parallel (tasks), chain (steps with {previous} placeholder).",
-		promptSnippet: "Delegate work to named subagents in isolated sessions (single, parallel, or chain modes).",
+			agentCapabilityDescription,
+		].join("\n\n"),
+		promptSnippet: `Delegate work to named subagents in isolated sessions (single, parallel, or chain modes).\n${agentCapabilityDescription}`,
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
