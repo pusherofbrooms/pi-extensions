@@ -4,6 +4,7 @@ import {
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
+  type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 
 export interface AgentRunUsage {
@@ -38,6 +39,7 @@ export interface RunAgentSessionOptions {
   persistSession?: boolean;
   signal?: AbortSignal;
   onMessageEnd?: (result: AgentRunResult, message: Message) => void;
+  inlineExtensions?: InlineExtension[];
 }
 
 export function defaultAgentRunUsage(): AgentRunUsage {
@@ -69,6 +71,7 @@ export async function runAgentSession(options: RunAgentSessionOptions): Promise<
     cwd: options.cwd,
     agentDir,
     noExtensions: true,
+    extensionFactories: options.inlineExtensions,
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,

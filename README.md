@@ -3,10 +3,11 @@
 This repo contains lightweight global extensions for Pi:
 
 1. **`show-system-prompt.ts`**
-2. **`web-tools.ts`**
-3. **`subagents.ts`**
-4. **`openai-codex-image-gen.ts`**
-5. **`goal.ts`**
+2. **`bash-read-only.ts`**
+3. **`web-tools.ts`**
+4. **`subagents.ts`**
+5. **`openai-codex-image-gen.ts`**
+6. **`goal.ts`**
 
 ## Installation
 
@@ -40,7 +41,22 @@ Adds a command named **`show-system-prompt`**.
 - `show-system-prompt save`: writes a snapshot to:
   - `.pi/system-prompt.snapshot.md` (under current working directory)
 
-## 2) `web-tools`
+## 2) `bash-read-only`
+Adds **`bash_read_only`**, a structured inspection tool taking `executable`, `args`, and optional `cwd`/`timeoutMs`. It never invokes a shell and denies commands by default. Explicit argument policies cover `ps`, `vmstat`, `uptime`, `uname`, `df`, `free`, `who`, `id`, display-only `date`, bounded `tail` (at most 10,000 lines), bounded query-only `journalctl` (at most 1,000 entries with `--no-pager`), and constrained Git inspection. Executable paths, follow/streaming and write modes, cwd escapes (including symlinks), unsafe inherited environment variables, Git external execution, excessive runtime, and excessive output are blocked. `tail` files must resolve beneath the session cwd.
+
+Trusted user-global additions may be placed in `~/.pi/agent/bash-read-only.json`; project configuration is intentionally ignored. Additions match the complete argument vector exactly and executable values must be command names resolved only through the fixed system PATH. An addition is an explicit grant to execute that exact command, not proof that the executable is read-only, so add only programs and arguments you trust:
+
+```json
+{
+  "additions": [
+    { "executable": "my-inspector", "args": ["--summary"] }
+  ]
+}
+```
+
+The normal Pi session registers this tool as an extension and may use trusted global additions. Isolated `/goal` observer, researcher, and reviewer sessions receive a factory-configured instance named `goal-bash-read-only` while extension discovery and global additions remain disabled; the goal worker retains ordinary `bash` for implementation. This is a defense-in-depth command policy, not an OS sandbox.
+
+## 3) `web-tools`
 Adds two tools:
 
 - **`web_search`**: web search with provider selection via env var
@@ -83,7 +99,7 @@ As a temporary workaround for a Defuddle 0.19.1 regression introduced by commit 
 
 Output is truncated to Pi defaults (about 50KB / 2000 lines), with full Markdown saved to a temp file when truncation occurs.
 
-## 3) `subagents`
+## 4) `subagents`
 Adds a subagent tool and command helpers:
 
 - **`subagent`**: runs named agents in isolated persisted Pi sessions (single, parallel, chain). Its model-facing description dynamically lists discovered agent names, descriptions, sources, and allowed tools so callers can choose a valid, capable agent.
@@ -119,14 +135,14 @@ You are a focused coding worker...
 
 If `model` is omitted, subagents use the current session model.
 
-## 4) `openai-codex-image-gen`
+## 5) `openai-codex-image-gen`
 Adds **`generate_openai_image`**, an image-generation tool that uses Pi's existing `openai-codex` OAuth credentials.
 
 - Authenticate with `/login` for the OpenAI Codex provider first.
 - Default save mode is `none`; use `save=project`, `save=global`, or `save=custom` to write PNG files.
 - Optional environment/config knobs: `PI_OPENAI_IMAGE_SAVE_MODE`, `PI_OPENAI_IMAGE_SAVE_DIR`, `PI_OPENAI_IMAGE_MODEL`.
 
-## 5) `goal`
+## 6) `goal`
 Adds a tool-backed autonomous `/goal` workflow.
 
 Commands:
@@ -208,6 +224,7 @@ nix develop --command npm test
 ```
 
 Current tests include:
+- `tests/bash-read-only.test.ts` (policy, confinement, and no-shell execution)
 - `tests/secret-detection.test.mjs` (goal-state secret detection)
 - `tests/goal-core.test.mjs` (goal criteria, phase, and review helpers)
 - `tests/goal-integration.integration.mjs` (mocked `/goal` orchestration and lookup flows)

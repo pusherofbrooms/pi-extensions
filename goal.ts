@@ -8,6 +8,7 @@ import {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { runAgentSession, type RunAgentSessionOptions } from "./agent-runner.ts";
+import { createBashReadOnlyExtension } from "./bash-read-only.ts";
 import { detectSecret } from "./secret-detection.mjs";
 import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, currentGoalPhase, formatEvidenceRefs, isTerminalGoal, nextGoalPhase, normalizeCriteriaInputs, normalizeGoal, normalizePhases, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
@@ -644,6 +645,7 @@ async function runIsolatedAgent(
   prompt: string,
   tools: string[],
   deps: GoalRuntimeDeps,
+  readOnlyInspection = false,
 ): Promise<{ text: string; sessionFile?: string }> {
   const result = await deps.runAgent({
     cwd: goal.cwd,
@@ -651,6 +653,7 @@ async function runIsolatedAgent(
     prompt,
     tools,
     model: ctx.model,
+    inlineExtensions: readOnlyInspection ? [{ name: "goal-bash-read-only", factory: createBashReadOnlyExtension({ allowGlobalAdditions: false }) }] : undefined,
   });
   if (result.exitCode !== 0) {
     const error = new Error(result.stderr ?? result.errorMessage ?? "Goal subagent failed.") as Error & { sessionFile?: string };
@@ -691,8 +694,9 @@ async function runGoalObserver(goal: StoredGoal, scaffold: GoalScaffold, ctx: Ex
     ctx,
     GOAL_OBSERVER_AGENT_PATH,
     observerPrompt(goal, scaffold, workflowPlan),
-    ["read", "grep", "find", "ls", "bash"],
+    ["read", "grep", "find", "ls", "bash_read_only"],
     deps,
+    true,
   );
   return { report: parseGoalAgentReportWithSession(result.text, "observer", result.sessionFile), sessionFile: result.sessionFile };
 }
@@ -703,8 +707,9 @@ async function runGoalResearcher(goal: StoredGoal, scaffold: GoalScaffold, ctx: 
     ctx,
     GOAL_RESEARCHER_AGENT_PATH,
     researcherPrompt(goal, scaffold, workflowPlan),
-    ["read", "grep", "find", "ls", "bash"],
+    ["read", "grep", "find", "ls", "bash_read_only"],
     deps,
+    true,
   );
   return { report: parseGoalAgentReportWithSession(result.text, "researcher", result.sessionFile), sessionFile: result.sessionFile };
 }
@@ -750,8 +755,9 @@ async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaff
     ctx,
     GOAL_PARENT_REVIEWER_AGENT_PATH,
     strategicReviewPrompt(goal, scaffold, workflowPlan),
-    ["read", "grep", "find", "ls", "bash"],
+    ["read", "grep", "find", "ls", "bash_read_only"],
     deps,
+    true,
   );
   const report = parseGoalAgentReportWithSession(result.text, "reviewer", result.sessionFile);
   const secretError = checkReportForSecrets(report);
@@ -790,8 +796,9 @@ async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, 
     ctx,
     GOAL_PARENT_REVIEWER_AGENT_PATH,
     parentReviewPrompt(goal, workerReport, scaffold),
-    ["read", "grep", "find", "ls", "bash"],
+    ["read", "grep", "find", "ls", "bash_read_only"],
     deps,
+    true,
   );
   const report = parseGoalAgentReportWithSession(result.text, "reviewer", result.sessionFile);
   const secretError = checkReportForSecrets(report);

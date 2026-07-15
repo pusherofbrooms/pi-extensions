@@ -39,14 +39,17 @@ function api() {
 function memoryDeps(reports, { now = "2026-01-01T00:00:00.000Z" } = {}) {
   const writes = [];
   const prompts = [];
+  const runOptions = [];
   let index = 0;
   return {
     writes,
     prompts,
+    runOptions,
     deps: {
       now: () => now,
       runAgent: async (options) => {
         prompts.push(options.prompt);
+        runOptions.push(options);
         const next = reports[index++];
         if (next instanceof Error) {
           next.sessionFile = `fake-session-${index}.json`;
@@ -92,7 +95,7 @@ function registeredExtension() {
 
 test("worker continuation persists checkpoints, iteration, and session reference", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "goal-integration-"));
-  const { deps, writes, prompts } = memoryDeps([report("worker")]);
+  const { deps, writes, prompts, runOptions } = memoryDeps([report("worker")]);
   const pi = api();
   await runDelegatedContinuation(pi, context(cwd), {
     id: "goal-worker",
@@ -124,6 +127,9 @@ test("worker continuation persists checkpoints, iteration, and session reference
   assert.match(prompts[0], /reportContractHint/);
   assert.doesNotMatch(prompts[0], /Human-readable goal snapshot/);
   assert.doesNotMatch(prompts[0], /"outcome": "progress"/);
+  assert.ok(runOptions[0].tools.includes("bash"));
+  assert.ok(!runOptions[0].tools.includes("bash_read_only"));
+  assert.equal(runOptions[0].inlineExtensions, undefined);
 });
 
 test("observer report is checkpointed and handed to the worker", async () => {
@@ -132,7 +138,7 @@ test("observer report is checkpointed and handed to the worker", async () => {
   await writeFile(join(cwd, ".pi", "scaffolds", "observer-case", "SCAFFOLD.md"), `---\nname: observer-case\nworkflow: observer-worker\nblockedPolicy: external-blocker-only\n---\nObserve, then work.\n`);
   const observer = report("observer", "progress", { nextAction: "Worker should use the observation." });
   const worker = report("worker");
-  const { deps, writes, prompts } = memoryDeps([observer, worker]);
+  const { deps, writes, prompts, runOptions } = memoryDeps([observer, worker]);
   await runDelegatedContinuation(api(), context(cwd), {
     id: "goal-observer",
     version: 1,
@@ -157,6 +163,11 @@ test("observer report is checkpointed and handed to the worker", async () => {
   assert.deepEqual(writes[1].roleCheckpoints.map((item) => item.role), ["observer", "worker"]);
   assert.match(prompts[1], /Worker should use the observation/);
   assert.deepEqual(writes.at(-1).iterations.at(-1).roles, ["observer", "worker"]);
+  assert.ok(runOptions[0].tools.includes("bash_read_only"));
+  assert.ok(!runOptions[0].tools.includes("bash"));
+  assert.equal(runOptions[0].inlineExtensions?.[0]?.name, "goal-bash-read-only");
+  assert.ok(runOptions[1].tools.includes("bash"));
+  assert.equal(runOptions[1].inlineExtensions, undefined);
 });
 
 test("worker readiness advances a reviewed phase without completing the goal", async () => {

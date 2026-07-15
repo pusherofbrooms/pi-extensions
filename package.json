@@ -22,6 +22,7 @@
   "pi": {
     "extensions": [
       "./show-system-prompt.ts",
+      "./bash-read-only.ts",
       "./web-tools.ts",
       "./subagents.ts",
       "./openai-codex-image-gen.ts",
