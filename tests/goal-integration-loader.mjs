@@ -1,6 +1,6 @@
 const stubs = new Map([
-  ["@mariozechner/pi-coding-agent", `export class UserMessageComponent { constructor(text) { this.text = text; } }`],
-  ["@mariozechner/pi-ai", `export function StringEnum(values) { return { values }; }`],
+  ["@earendil-works/pi-coding-agent", `export const CONFIG_DIR_NAME = ".pi"; export function getAgentDir() { return process.env.PI_AGENT_DIR || process.env.HOME + "/.pi/agent"; } export class UserMessageComponent { constructor(text) { this.text = text; } }`],
+  ["@earendil-works/pi-ai", `export function StringEnum(values) { return { values }; }`],
   ["typebox", `
     const make = (name) => (...args) => ({ name, args });
     export const Type = {

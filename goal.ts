@@ -1,16 +1,17 @@
 import {
+  CONFIG_DIR_NAME,
+  getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { UserMessageComponent } from "@mariozechner/pi-coding-agent";
+  UserMessageComponent,
+} from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { runAgentSession, type RunAgentSessionOptions } from "./agent-runner.ts";
 import { detectSecret } from "./secret-detection.mjs";
 import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, currentGoalPhase, formatEvidenceRefs, isTerminalGoal, nextGoalPhase, normalizeCriteriaInputs, normalizeGoal, normalizePhases, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,15 +19,15 @@ const MAX_OBJECTIVE_CHARS = 4000;
 const CONTINUATION_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
 const MAX_STORED_ITERATIONS = 50;
 const MODULE_DIR = typeof __dirname === "string" ? __dirname : dirname(fileURLToPath(import.meta.url));
-const STORE_DIR = join(homedir(), ".pi", "agent", "goals");
+const STORE_DIR = join(getAgentDir(), "goals");
 const GOALS_DIR = join(STORE_DIR, "goals");
 const BUNDLED_SCAFFOLDS_DIR = join(MODULE_DIR, "scaffolds");
 const GOAL_WORKER_AGENT_PATH = join(MODULE_DIR, "goal-agents", "goal-worker.md");
 const GOAL_OBSERVER_AGENT_PATH = join(MODULE_DIR, "goal-agents", "goal-observer.md");
 const GOAL_RESEARCHER_AGENT_PATH = join(MODULE_DIR, "goal-agents", "goal-researcher.md");
 const GOAL_PARENT_REVIEWER_AGENT_PATH = join(MODULE_DIR, "goal-agents", "goal-parent-reviewer.md");
-const USER_SCAFFOLDS_DIR = join(homedir(), ".pi", "agent", "scaffolds");
-const PROJECT_SCAFFOLDS_DIR = ".pi/scaffolds";
+const USER_SCAFFOLDS_DIR = join(getAgentDir(), "scaffolds");
+const PROJECT_SCAFFOLDS_DIR = join(CONFIG_DIR_NAME, "scaffolds");
 const INDEX_PATH = join(STORE_DIR, "index.json");
 
 type GoalStatus = "active" | "paused" | "blocked" | "complete" | "cleared";

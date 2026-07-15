@@ -1,10 +1,10 @@
-import type { Message, Model } from "@mariozechner/pi-ai";
+import type { Message, Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 export interface AgentRunUsage {
   input: number;

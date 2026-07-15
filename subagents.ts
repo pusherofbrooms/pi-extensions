@@ -1,13 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Message, Model } from "@mariozechner/pi-ai";
-import { StringEnum } from "@mariozechner/pi-ai";
+import type { Message, Model } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
 import {
+	CONFIG_DIR_NAME,
 	getAgentDir,
 	parseFrontmatter,
 	type ExtensionAPI,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { defaultAgentRunUsage, runAgentSession } from "./agent-runner.ts";
 import { Type } from "typebox";
 
@@ -81,7 +82,7 @@ function isDirectory(p: string): boolean {
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
-		const candidate = path.join(currentDir, ".pi", "agents");
+		const candidate = path.join(currentDir, CONFIG_DIR_NAME, "agents");
 		if (isDirectory(candidate)) return candidate;
 		const parentDir = path.dirname(currentDir);
 		if (parentDir === currentDir) return null;

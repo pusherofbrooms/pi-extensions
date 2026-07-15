@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
     pi.registerCommand("show-system-prompt", {
@@ -15,7 +15,7 @@ export default function (pi: ExtensionAPI) {
             }
 
             if (args.trim() === "save") {
-                const outPath = join(ctx.cwd, ".pi", "system-prompt.snapshot.md");
+                const outPath = join(ctx.cwd, CONFIG_DIR_NAME, "system-prompt.snapshot.md");
                 await mkdir(dirname(outPath), { recursive: true });
                 await writeFile(outPath, prompt, "utf-8");
                 ctx.ui.notify(`Saved system prompt to ${outPath}`, "info");

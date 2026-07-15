@@ -31,8 +31,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { type ExtensionAPI, getAgentDir, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 
 const PROVIDER = "openai-codex";
@@ -93,7 +93,7 @@ function readConfigFile(path: string): ExtensionConfig {
 function loadConfig(cwd: string): ExtensionConfig {
 	const globalPath = join(getAgentDir(), "extensions", "openai-codex-image-gen.json");
 	const globalConfig = readConfigFile(globalPath);
-	const projectConfig = readConfigFile(join(cwd, ".pi", "extensions", "openai-codex-image-gen.json"));
+	const projectConfig = readConfigFile(join(cwd, CONFIG_DIR_NAME, "extensions", "openai-codex-image-gen.json"));
 	return { ...globalConfig, ...projectConfig };
 }
 
@@ -107,7 +107,7 @@ function resolveSaveConfig(params: ToolParams, cwd: string): SaveConfig {
 	}
 
 	if (mode === "project") {
-		return { mode, outputDir: join(cwd, ".pi", "generated-images") };
+		return { mode, outputDir: join(cwd, CONFIG_DIR_NAME, "generated-images") };
 	}
 
 	if (mode === "global") {
