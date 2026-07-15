@@ -33,7 +33,7 @@ function context(cwd) {
 
 function api() {
   const messages = [];
-  return { messages, sendMessage(message) { messages.push(message); } };
+  return { messages, getThinkingLevel: () => "low", sendMessage(message) { messages.push(message); } };
 }
 
 function memoryDeps(reports, { now = "2026-01-01T00:00:00.000Z" } = {}) {
@@ -130,6 +130,7 @@ test("worker continuation persists checkpoints, iteration, and session reference
   assert.ok(runOptions[0].tools.includes("bash"));
   assert.ok(!runOptions[0].tools.includes("bash_read_only"));
   assert.equal(runOptions[0].inlineExtensions, undefined);
+  assert.equal(runOptions[0].thinkingLevel, "low");
 });
 
 test("observer report is checkpointed and handed to the worker", async () => {
@@ -166,6 +167,7 @@ test("observer report is checkpointed and handed to the worker", async () => {
   assert.ok(runOptions[0].tools.includes("bash_read_only"));
   assert.ok(!runOptions[0].tools.includes("bash"));
   assert.equal(runOptions[0].inlineExtensions?.[0]?.name, "goal-bash-read-only");
+  assert.equal(runOptions[0].thinkingLevel, "low");
   assert.ok(runOptions[1].tools.includes("bash"));
   assert.equal(runOptions[1].inlineExtensions, undefined);
 });

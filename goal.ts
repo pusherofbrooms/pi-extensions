@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { runAgentSession, type RunAgentSessionOptions } from "./agent-runner.ts";
+import { runAgentSession, type AgentThinkingLevel, type RunAgentSessionOptions } from "./agent-runner.ts";
 import { createBashReadOnlyExtension } from "./bash-read-only.ts";
 import { detectSecret } from "./secret-detection.mjs";
 import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, currentGoalPhase, formatEvidenceRefs, isTerminalGoal, nextGoalPhase, normalizeCriteriaInputs, normalizeGoal, normalizePhases, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
@@ -645,6 +645,7 @@ async function runIsolatedAgent(
   prompt: string,
   tools: string[],
   deps: GoalRuntimeDeps,
+  thinkingLevel: AgentThinkingLevel,
   readOnlyInspection = false,
 ): Promise<{ text: string; sessionFile?: string }> {
   const result = await deps.runAgent({
@@ -653,6 +654,7 @@ async function runIsolatedAgent(
     prompt,
     tools,
     model: ctx.model,
+    thinkingLevel,
     inlineExtensions: readOnlyInspection ? [{ name: "goal-bash-read-only", factory: createBashReadOnlyExtension({ allowGlobalAdditions: false }) }] : undefined,
   });
   if (result.exitCode !== 0) {
@@ -688,7 +690,7 @@ async function checkpointRole(
   return deps.writeGoal(appendGoalRoleCheckpoint(goal, checkpoint) as StoredGoal);
 }
 
-async function runGoalObserver(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runGoalObserver(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, thinkingLevel: AgentThinkingLevel, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
@@ -696,12 +698,13 @@ async function runGoalObserver(goal: StoredGoal, scaffold: GoalScaffold, ctx: Ex
     observerPrompt(goal, scaffold, workflowPlan),
     ["read", "grep", "find", "ls", "bash_read_only"],
     deps,
+    thinkingLevel,
     true,
   );
   return { report: parseGoalAgentReportWithSession(result.text, "observer", result.sessionFile), sessionFile: result.sessionFile };
 }
 
-async function runGoalResearcher(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runGoalResearcher(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, thinkingLevel: AgentThinkingLevel, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
@@ -709,12 +712,13 @@ async function runGoalResearcher(goal: StoredGoal, scaffold: GoalScaffold, ctx: 
     researcherPrompt(goal, scaffold, workflowPlan),
     ["read", "grep", "find", "ls", "bash_read_only"],
     deps,
+    thinkingLevel,
     true,
   );
   return { report: parseGoalAgentReportWithSession(result.text, "researcher", result.sessionFile), sessionFile: result.sessionFile };
 }
 
-async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), priorRoleReports: GoalAgentReport[] = [], deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, thinkingLevel: AgentThinkingLevel, workflowPlan = selectGoalWorkflowPlan(scaffold), priorRoleReports: GoalAgentReport[] = [], deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
@@ -722,6 +726,7 @@ async function runGoalWorker(goal: StoredGoal, scaffold: GoalScaffold, ctx: Exte
     delegatedPrompt(goal, scaffold, workflowPlan, priorRoleReports),
     ["read", "grep", "find", "ls", "bash", "edit", "write"],
     deps,
+    thinkingLevel,
   );
   return { report: parseGoalAgentReportWithSession(result.text, "worker", result.sessionFile), sessionFile: result.sessionFile };
 }
@@ -749,7 +754,7 @@ ${JSON.stringify(contextPacket)}
 Return only GoalAgentReport v1 reviewer JSON matching reportContractHint with outcome=review_complete, summary, confidence, actions, evidence, verdict, findings, criteriaAssessment (empty if not used), and nextAction. Non-ready verdicts require unresolvedGaps.`;
 }
 
-async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, thinkingLevel: AgentThinkingLevel, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
@@ -757,6 +762,7 @@ async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaff
     strategicReviewPrompt(goal, scaffold, workflowPlan),
     ["read", "grep", "find", "ls", "bash_read_only"],
     deps,
+    thinkingLevel,
     true,
   );
   const report = parseGoalAgentReportWithSession(result.text, "reviewer", result.sessionFile);
@@ -790,7 +796,7 @@ ${JSON.stringify(workerReport)}
 Return only GoalAgentReport v1 reviewer JSON matching reportContractHint with outcome=review_complete, summary, confidence, actions, evidence, verdict, findings, and criteriaAssessment[{id,status,reason,evidence}]. Non-ready verdicts require unresolvedGaps; ready verdicts must omit them. Optional: commentary, scopeConcerns, phaseTransition.`;
 }
 
-async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, scaffold: GoalScaffold, ctx: ExtensionContext, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
+async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, scaffold: GoalScaffold, ctx: ExtensionContext, thinkingLevel: AgentThinkingLevel, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
   const result = await runIsolatedAgent(
     goal,
     ctx,
@@ -798,6 +804,7 @@ async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, 
     parentReviewPrompt(goal, workerReport, scaffold),
     ["read", "grep", "find", "ls", "bash_read_only"],
     deps,
+    thinkingLevel,
     true,
   );
   const report = parseGoalAgentReportWithSession(result.text, "reviewer", result.sessionFile);
@@ -813,6 +820,7 @@ function applyDelegatedReport(goal: StoredGoal, report: GoalAgentReport, scaffol
 }
 
 export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<void> {
+  const thinkingLevel = pi.getThinkingLevel();
   if (ctx.hasUI) ctx.ui.notify(`Running delegated goal step ${goal.stepCount + 1}...`, "info");
   const phase = currentGoalPhase(goal);
   const scaffold = await loadScaffold(ctx.cwd, phase?.scaffold ?? goal.scaffold ?? "default");
@@ -822,7 +830,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
     if (ctx.hasUI) ctx.ui.notify("Running scheduled strategic goal review...", "info");
     let reviewRun: { report: GoalAgentReport; sessionFile?: string };
     try {
-      reviewRun = await runScheduledStrategicReview(goal, scaffold, ctx, workflowPlan, deps);
+      reviewRun = await runScheduledStrategicReview(goal, scaffold, ctx, thinkingLevel, workflowPlan, deps);
     } catch (error) {
       await checkpointRole(goal, "reviewer", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile }, deps);
       throw error;
@@ -870,7 +878,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
   let afterObservation = goal;
   if (workflowPlan.roles[0] === "observer") {
     try {
-      observerRun = await runGoalObserver(goal, scaffold, ctx, workflowPlan, deps);
+      observerRun = await runGoalObserver(goal, scaffold, ctx, thinkingLevel, workflowPlan, deps);
       afterObservation = await checkpointRole(
         applyDelegatedReport(goal, observerRun.report, scaffold),
         "observer",
@@ -888,7 +896,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
   let afterResearch = afterObservation;
   if (workflowPlan.roles[0] === "researcher") {
     try {
-      researcherRun = await runGoalResearcher(afterObservation, scaffold, ctx, workflowPlan, deps);
+      researcherRun = await runGoalResearcher(afterObservation, scaffold, ctx, thinkingLevel, workflowPlan, deps);
       afterResearch = await checkpointRole(
         applyDelegatedReport(afterObservation, researcherRun.report, scaffold),
         "researcher",
@@ -905,7 +913,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
   const priorRoleReports = [observerRun?.report, researcherRun?.report].filter(Boolean) as GoalAgentReport[];
   let workerRun: { report: GoalAgentReport; sessionFile?: string };
   try {
-    workerRun = await runGoalWorker(afterResearch, scaffold, ctx, workflowPlan, priorRoleReports, deps);
+    workerRun = await runGoalWorker(afterResearch, scaffold, ctx, thinkingLevel, workflowPlan, priorRoleReports, deps);
   } catch (error) {
     await checkpointRole(afterResearch, "worker", "failed", { error, sessionFile: (error as Error & { sessionFile?: string }).sessionFile }, deps);
     throw error;
@@ -928,7 +936,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
   if (report.outcome === "ready_for_review" && workflowPlan.reviewOnReady) {
     if (ctx.hasUI) ctx.ui.notify("Delegated worker proposed completion; running parent verification...", "info");
     try {
-      const parentReviewRun = await runParentReview(afterReport, report, scaffold, ctx, deps);
+      const parentReviewRun = await runParentReview(afterReport, report, scaffold, ctx, thinkingLevel, deps);
       parentReview = parentReviewRun.report;
       parentReviewSessionFile = parentReviewRun.sessionFile;
       reviewedReport = await checkpointRole(

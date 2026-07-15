@@ -7,6 +7,8 @@ import {
   type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 
+export type AgentThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface AgentRunUsage {
   input: number;
   output: number;
@@ -35,6 +37,7 @@ export interface RunAgentSessionOptions {
   prompt: string;
   tools: string[];
   model?: Model<any>;
+  thinkingLevel?: AgentThinkingLevel;
   agentDir?: string;
   persistSession?: boolean;
   signal?: AbortSignal;
@@ -97,6 +100,7 @@ export async function runAgentSession(options: RunAgentSessionOptions): Promise<
     resourceLoader: loader,
     sessionManager,
     model: options.model,
+    thinkingLevel: options.thinkingLevel,
     tools: options.tools,
   });
   result.sessionFile = session.sessionFile;

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { enumerateAgentCapabilities, formatAgentCapabilities } from "../subagents.ts";
+import { enumerateAgentCapabilities, formatAgentCapabilities, parseThinkingLevel } from "../subagents.ts";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -18,4 +18,14 @@ test("subagent capability catalog exposes names, descriptions, and tools", () =>
 	assert.match(description, /use only these exact names/i);
 	assert.match(description, /scout .*tools: read, grep, find, ls/);
 	assert.match(description, /worker .*tools: .*edit/);
+});
+
+test("agent thinking levels are normalized and invalid values fail clearly", () => {
+	assert.equal(parseThinkingLevel(undefined), undefined);
+	assert.equal(parseThinkingLevel(" Low "), "low");
+	assert.equal(parseThinkingLevel("xhigh"), "xhigh");
+	assert.throws(() => parseThinkingLevel(""), /Invalid agent thinking level/);
+	assert.throws(() => parseThinkingLevel(null), /Invalid agent thinking level/);
+	assert.throws(() => parseThinkingLevel(3), /Invalid agent thinking level/);
+	assert.throws(() => parseThinkingLevel("extreme"), /Invalid agent thinking level/);
 });

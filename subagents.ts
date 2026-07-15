@@ -9,7 +9,7 @@ import {
 	parseFrontmatter,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { defaultAgentRunUsage, runAgentSession } from "./agent-runner.ts";
+import { defaultAgentRunUsage, runAgentSession, type AgentThinkingLevel } from "./agent-runner.ts";
 import { Type } from "typebox";
 
 export type AgentScope = "user" | "project" | "both";
@@ -19,6 +19,7 @@ interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	thinking?: unknown;
 	systemPrompt: string;
 	source: "user" | "project" | "default";
 	filePath: string;
@@ -44,6 +45,7 @@ interface SingleResult {
 	usage: UsageStats;
 	sessionFile?: string;
 	model?: string;
+	thinkingLevel?: AgentThinkingLevel;
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
@@ -107,19 +109,20 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "default"):
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
-		if (!frontmatter.name || !frontmatter.description) continue;
+		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") continue;
 
-		const tools = frontmatter.tools
-			?.split(",")
+		const tools = typeof frontmatter.tools === "string" ? frontmatter.tools
+			.split(",")
 			.map((t: string) => t.trim())
-			.filter(Boolean);
+			.filter(Boolean) : undefined;
 
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: tools && tools.length > 0 ? tools : undefined,
-			model: frontmatter.model,
+			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			thinking: frontmatter.thinking,
 			systemPrompt: body,
 			source,
 			filePath,
@@ -168,6 +171,18 @@ function getFinalOutput(messages: Message[]): string {
 		}
 	}
 	return "";
+}
+
+export function parseThinkingLevel(value: unknown): AgentThinkingLevel | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || value.trim() === "") {
+		throw new Error(`Invalid agent thinking level '${String(value)}'. Expected off, minimal, low, medium, high, xhigh, or max.`);
+	}
+	const normalized = value.trim().toLowerCase();
+	if (["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(normalized)) {
+		return normalized as AgentThinkingLevel;
+	}
+	throw new Error(`Invalid agent thinking level '${value}'. Expected off, minimal, low, medium, high, xhigh, or max.`);
 }
 
 function resolveModel(spec: string | undefined, ctx: Parameters<NonNullable<ExtensionAPI["registerTool"]>["0"]["execute"]>[4]): Model<any> | undefined {
@@ -249,6 +264,7 @@ async function runSingleAgent(
 	ctx: Parameters<NonNullable<ExtensionAPI["registerTool"]>["0"]["execute"]>[4],
 	onUpdate: Parameters<NonNullable<ExtensionAPI["registerTool"]>["0"]["execute"]>[3],
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	parentThinkingLevel: AgentThinkingLevel,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) {
@@ -281,6 +297,13 @@ async function runSingleAgent(
 		model: agent.model ?? inheritedModelLabel,
 		step,
 	};
+	let thinkingLevel: AgentThinkingLevel;
+	try {
+		thinkingLevel = parseThinkingLevel(agent.thinking) ?? parentThinkingLevel;
+		current.thinkingLevel = thinkingLevel;
+	} catch (error) {
+		return { ...current, exitCode: 1, stderr: (error as Error).message };
+	}
 
 	const emitUpdate = () => {
 		if (!onUpdate) return;
@@ -296,6 +319,7 @@ async function runSingleAgent(
 		prompt: task,
 		tools,
 		model: resolvedModel,
+		thinkingLevel,
 		signal,
 		onMessageEnd: (partial) => {
 			current.messages = partial.messages;
@@ -400,6 +424,7 @@ export default function (pi: ExtensionAPI) {
 				projectAgentsDir: discovery.projectAgentsDir,
 				results,
 			}),
+			pi.getThinkingLevel(),
 		);
 
 		const text = getFinalOutput(result.messages) || result.stderr || "(no output)";
@@ -490,6 +515,7 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: `Delegate work to named subagents in isolated sessions (single, parallel, or chain modes).\n${agentCapabilityDescription}`,
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const parentThinkingLevel = pi.getThinkingLevel();
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
@@ -561,6 +587,7 @@ export default function (pi: ExtensionAPI) {
 						ctx,
 						onUpdate,
 						makeDetails("chain"),
+						parentThinkingLevel,
 					);
 					results.push(result);
 					if (result.exitCode !== 0) {
@@ -591,7 +618,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t) =>
-					runSingleAgent(ctx.cwd, agents, t.agent, t.task, t.cwd, undefined, signal, ctx, onUpdate, makeDetails("parallel")),
+					runSingleAgent(ctx.cwd, agents, t.agent, t.task, t.cwd, undefined, signal, ctx, onUpdate, makeDetails("parallel"), parentThinkingLevel),
 				);
 
 				const successCount = results.filter((r) => r.exitCode === 0).length;
@@ -615,6 +642,7 @@ export default function (pi: ExtensionAPI) {
 					ctx,
 					onUpdate,
 					makeDetails("single"),
+					parentThinkingLevel,
 				);
 
 				return {
