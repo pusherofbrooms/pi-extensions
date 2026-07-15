@@ -75,7 +75,7 @@ Output is truncated to Pi defaults (about 50KB / 2000 lines), with full Markdown
 ## 3) `subagents`
 Adds a subagent tool and command helpers:
 
-- **`subagent`**: runs named agents in isolated persisted Pi sessions (single, parallel, chain).
+- **`subagent`**: runs named agents in isolated persisted Pi sessions (single, parallel, chain). Its model-facing description dynamically lists discovered agent names, descriptions, sources, and allowed tools so callers can choose a valid, capable agent.
 - **`/agents`**: lists discovered agents and their source.
 - **`/agent <name> <task>`**: run any discovered agent by name.
 - Dynamic aliases like **`/scout ...`** or **`/worker ...`** are auto-registered when command names do not conflict.
@@ -193,13 +193,15 @@ This repo includes lightweight unit tests for pure extension support logic.
 Run with Nix:
 
 ```bash
-nix develop --command node --test tests/*.test.mjs
+nix develop --command npm test
 ```
 
-Current tests:
+Current tests include:
 - `tests/secret-detection.test.mjs` (goal-state secret detection)
 - `tests/goal-core.test.mjs` (goal criteria, phase, and review helpers)
 - `tests/goal-integration.integration.mjs` (mocked `/goal` orchestration and lookup flows)
+- `tests/subagent-catalog.test.ts` (model-facing agent capability catalogue)
+- `tests/web-tools.test.ts` (web extraction behavior)
 
 Recommended test strategy for extensions:
 1. **Unit tests** for pure logic (regex/policy decision code).
