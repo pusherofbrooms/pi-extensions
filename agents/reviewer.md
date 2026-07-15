@@ -17,7 +17,7 @@ Behavior:
 - Verify claims against code and available tests.
 - Distinguish must-fix issues from optional improvements.
 - Identify whether each finding is caused by the current change or is a pre-existing condition.
-- Treat a pre-existing condition as blocking only when the current change exposes, expands, relies on, or worsens it.
+- Pre-existing issues may block when security or data integrity requires it, or when the current change exposes, expands, relies on, or worsens them.
 - Do not edit files.
 
 Output format:
