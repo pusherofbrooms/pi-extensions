@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import test from "node:test";
-import { buildGitArgs, executeReadOnly, isBuiltInAllowed, isConfiguredAllowed } from "../bash-read-only.ts";
+import { buildGitArgs, childEnvironment, executeReadOnly, isBuiltInAllowed, isConfiguredAllowed } from "../bash-read-only.ts";
 
 test("built-in policy is deny-by-default and blocks streaming modes", () => {
   assert.equal(isBuiltInAllowed("ps", ["-ef"]), true);
@@ -71,6 +71,50 @@ test("find policy accepts a positive inspection grammar", () => {
     [".", "("], [".", ")"], [".", "(", "-print"], [".", "-print", ")"], [".", "-print", "-o"], [".", "!"], [".", "-not", "-and", "-print"], [".", "-a", "-print"],
   ];
   for (const args of denied) assert.equal(isBuiltInAllowed("find", args), false, args.join(" "));
+});
+
+test("rg policy allows reconnaissance and rejects indirection and unknown options", () => {
+  const allowed = [
+    ["-n", "--hidden", "-S", "PATTERN", "PATH"],
+    ["--files", "--hidden", "-g", "*.ts", "src"],
+    ["-n", "-C", "3", "-m", "100", "-t", "ts", "--glob=!.git/**", "TODO", "."],
+    ["--files-with-matches", "--no-heading", "--color=never", "-e", "-leading", "--", "-path"],
+    ["--", "-pattern", "."],
+    ["--type-list"],
+  ];
+  for (const args of allowed) assert.equal(isBuiltInAllowed("rg", args), true, args.join(" "));
+
+  const denied = [
+    ["--pre", "cat", "x"], ["--pre-glob", "*.zip", "x"], ["-f", "patterns", "."], ["--file=patterns", "."],
+    ["--files-from", "paths"], ["--config-path", "config", "x"], ["--unknown", "x"], ["-C", "101", "x"],
+    ["-m", "10001", "x"], ["-e"], ["-leading", "."], ["--files", "-e", "x"],
+    ["--sort", "name", "x"], ["--sort=name", "x"], ["--glob", "", "x"], ["--glob=", "x"],
+    ["--files", "--type-list"], ["-nS", "x"], ["-C3", "x"], ["-tts", "x"],
+  ];
+  assert.equal(isBuiltInAllowed("rg", ["--sort", "path", "x"]), true);
+  assert.equal(isBuiltInAllowed("rg", ["--sort=modified", "x"]), true);
+  for (const args of denied) assert.equal(isBuiltInAllowed("rg", args), false, args.join(" "));
+});
+
+test("child environment inherits only PATH and falls back when absent", () => {
+  const inherited = childEnvironment({ PATH: "/pi/trusted/bin", SECRET: "do-not-copy", HOME: "/parent/home" });
+  assert.equal(inherited.PATH, "/pi/trusted/bin");
+  assert.equal(inherited.SECRET, undefined);
+  assert.equal(inherited.HOME, "/nonexistent");
+  assert.equal(childEnvironment({}).PATH, "/usr/bin:/bin:/usr/sbin:/sbin");
+  assert.equal(childEnvironment({ PATH: "" }).PATH, "/usr/bin:/bin:/usr/sbin:/sbin");
+});
+
+test("external rg executes by command name from the parent PATH", async (t) => {
+  try { await promisify(execFile)("rg", ["--version"]); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") { t.skip("rg unavailable on PATH"); return; }
+    throw error;
+  }
+  const root = await mkdtemp(join(tmpdir(), "bash-ro-rg-"));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  await writeFile(join(root, "sample.txt"), "needle\n");
+  const result = await executeReadOnly("rg", ["-n", "needle", "."], undefined, root, 10_000, undefined, { allowGlobalAdditions: false });
+  assert.match(result.stdout, /1:needle/);
 });
 
 test("external find and git -C execute through the policy", async (t) => {

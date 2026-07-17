@@ -57,6 +57,63 @@ function journalAllowed(args: readonly string[]): boolean {
   return bounded && noPager;
 }
 
+type OptionPolicy = {
+  flags: ReadonlySet<string>;
+  values: ReadonlyMap<string, (value: string) => boolean>;
+  finish: (positionals: readonly string[], seen: ReadonlySet<string>) => boolean;
+};
+
+/** Positive parser shared by conventional tools whose CLI is flags followed by operands. */
+function conventionalOptionsAllowed(args: readonly string[], policy: OptionPolicy): boolean {
+  const positionals: string[] = [], seen = new Set<string>();
+  let afterOptions = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!afterOptions && arg === "--") { afterOptions = true; continue; }
+    if (!afterOptions && arg.startsWith("--") && arg.includes("=")) {
+      const split = arg.indexOf("="), option = arg.slice(0, split), value = arg.slice(split + 1), validate = policy.values.get(option);
+      if (!validate?.(value)) return false;
+      seen.add(option); continue;
+    }
+    if (!afterOptions && policy.flags.has(arg)) { seen.add(arg); continue; }
+    if (!afterOptions && policy.values.has(arg)) {
+      if (++i >= args.length || !policy.values.get(arg)!(args[i])) return false;
+      seen.add(arg); continue;
+    }
+    if (!afterOptions && arg.startsWith("-")) return false;
+    positionals.push(arg);
+  }
+  return policy.finish(positionals, seen);
+}
+
+const rgValue = (value: string) => value.length > 0;
+const rgBound = (max: number) => (value: string) => boundedInteger(value, max, true);
+const RG_POLICY: OptionPolicy = {
+  flags: new Set([
+    "-n", "--line-number", "--hidden", "-S", "--smart-case", "-i", "--ignore-case", "-s", "--case-sensitive",
+    "-F", "--fixed-strings", "-w", "--word-regexp", "-x", "--line-regexp", "--no-ignore", "--no-ignore-vcs",
+    "-l", "--files-with-matches", "--files-without-match", "-c", "--count", "--count-matches", "--files", "--type-list",
+    "--column", "--heading", "--no-heading", "-H", "--with-filename", "-I", "--no-filename", "-0", "--null",
+    "--null-data", "--stats", "--json", "-q", "--quiet", "--only-matching", "-o", "--trim",
+  ]),
+  values: new Map([
+    ["-e", rgValue], ["--regexp", rgValue], ["-g", rgValue], ["--glob", rgValue], ["--iglob", rgValue],
+    ["-t", (v) => /^[A-Za-z0-9_.+-]+$/.test(v)], ["--type", (v) => /^[A-Za-z0-9_.+-]+$/.test(v)],
+    ["-T", (v) => /^[A-Za-z0-9_.+-]+$/.test(v)], ["--type-not", (v) => /^[A-Za-z0-9_.+-]+$/.test(v)],
+    ["-A", rgBound(100)], ["--after-context", rgBound(100)], ["-B", rgBound(100)], ["--before-context", rgBound(100)],
+    ["-C", rgBound(100)], ["--context", rgBound(100)], ["-m", rgBound(10_000)], ["--max-count", rgBound(10_000)],
+    ["--max-depth", rgBound(1_000)], ["--color", (v) => /^(?:never|always|auto|ansi)$/.test(v)],
+    ["--sort", (v) => /^(?:path|modified|accessed|created)$/.test(v)],
+  ]),
+  finish(positionals, seen) {
+    const filesMode = seen.has("--files"), typeList = seen.has("--type-list"), explicitPattern = seen.has("-e") || seen.has("--regexp");
+    if ((filesMode || typeList) && explicitPattern) return false;
+    if (typeList) return positionals.length === 0 && !filesMode;
+    if (filesMode) return true;
+    return explicitPattern || positionals.length > 0;
+  },
+};
+
 function splitGitArgs(args: readonly string[]): { globals: string[]; command: string[] } | undefined {
   const globals: string[] = [];
   let i = 0;
@@ -145,6 +202,7 @@ export function isBuiltInAllowed(executable: string, args: readonly string[]): b
     case "journalctl": return journalAllowed(args);
     case "find": return findAllowed(args);
     case "git": return gitAllowed(args);
+    case "rg": return conventionalOptionsAllowed(args, RG_POLICY);
     default: return false;
   }
 }
@@ -157,6 +215,10 @@ async function loadRules(): Promise<ReadOnlyRule[]> {
     const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf8")) as Config;
     return Array.isArray(parsed.additions) ? parsed.additions.filter((rule) => rule && typeof rule.executable === "string" && /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(rule.executable) && Array.isArray(rule.args) && rule.args.length <= MAX_ARGS && rule.args.every((arg) => typeof arg === "string" && safeToken(arg))) : [];
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw new Error(`Invalid trusted bash_read_only config ${CONFIG_PATH}: ${(error as Error).message}`); }
+}
+
+export function childEnvironment(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { PATH: parent.PATH || SAFE_PATH, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_PAGER: "cat", GIT_EXTERNAL_DIFF: "", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
 }
 
 async function prepareTailFiles(cwd: string, args: readonly string[]): Promise<{ args: string[]; handles: FileHandle[] }> {
@@ -196,7 +258,7 @@ export async function executeReadOnly(executable: string, args: string[], reques
   return await new Promise((resolve, reject) => {
     const grouped = process.platform !== "win32";
     const closeHandles = () => { if (tail) void Promise.allSettled(tail.handles.map((handle) => handle.close())); };
-    const child = spawn(executable, commandArgs, { cwd, shell: false, detached: grouped, env: { PATH: SAFE_PATH, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_PAGER: "cat", GIT_EXTERNAL_DIFF: "", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "pipe", "pipe", ...(tail?.handles.map((handle) => handle.fd) ?? [])] });
+    const child = spawn(executable, commandArgs, { cwd, shell: false, detached: grouped, env: childEnvironment(), stdio: ["ignore", "pipe", "pipe", ...(tail?.handles.map((handle) => handle.fd) ?? [])] });
     let stdout = "", stderr = "", received = 0, settled = false, reason: "aborted" | "timeout" | "output-limit" | undefined;
     const kill = (why: typeof reason) => { if (!reason) reason = why; try { if (grouped && child.pid) process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); } catch { child.kill("SIGKILL"); } };
     const collect = (target: "stdout" | "stderr") => (chunk: Buffer) => {
