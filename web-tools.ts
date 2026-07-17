@@ -28,6 +28,8 @@ const BLOCKED_HOSTS = new Set([
   "0.0.0.0",
 ]);
 
+export const MAX_FETCH_RESPONSE_BYTES = 5 * 1024 * 1024;
+
 function getSearchProvider(): SearchProvider {
   const value = (process.env.WEB_SEARCH_PROVIDER ?? "duckduckgo").toLowerCase();
   if (value === "brave" || value === "tavily" || value === "serpapi" || value === "duckduckgo" || value === "ddg") {
@@ -139,6 +141,36 @@ async function assertSafePublicUrl(input: string, allowedHosts: readonly string[
   }
 
   return url;
+}
+
+async function readResponseText(response: Response, maxBytes = MAX_FETCH_RESPONSE_BYTES): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel();
+    throw new Error(`Response exceeds maximum size of ${formatSize(maxBytes)}`);
+  }
+
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new Error(`Response exceeds maximum size of ${formatSize(maxBytes)}`);
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 async function fetchJson(url: string, init: RequestInit = {}, timeoutMs = getTimeoutMs()): Promise<any> {
@@ -439,7 +471,7 @@ export async function fetchPage(url: string, signal?: AbortSignal, options: Fetc
     }
 
     const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
-    const body = await response.text();
+    const body = await readResponseText(response);
 
     const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml+xml");
     const extracted = isHtml ? await extractWithDefuddle(body, response.url || currentUrl.toString()) : undefined;

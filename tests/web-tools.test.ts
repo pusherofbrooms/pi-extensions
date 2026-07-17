@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defuddleOptionsForUrl, extractWithDefuddle, fetchPage, isHostnameAllowed } from "../web-tools.ts";
+import {
+  MAX_FETCH_RESPONSE_BYTES,
+  defuddleOptionsForUrl,
+  extractWithDefuddle,
+  fetchPage,
+  isHostnameAllowed,
+} from "../web-tools.ts";
 
 const articleHtml = `<!doctype html><html><head><title>Useful article</title><meta name="author" content="Ada"></head><body>
 <header><nav><a href="/home">Home</a> <a href="/pricing">Pricing</a></nav></header>
@@ -45,6 +51,52 @@ test("fetch host allowlist rejects ambiguous glob patterns", () => {
 
 test("fetch_page rejects IPv6 loopback before fetching", async () => {
   await assert.rejects(fetchPage("http://[::1]"), /Blocked private IP host/);
+});
+
+test("fetch_page rejects an oversized response from content-length before reading it", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = false;
+  const body = new ReadableStream({
+    cancel() {
+      cancelled = true;
+    },
+  });
+  globalThis.fetch = async () => new Response(body, {
+    status: 200,
+    headers: {
+      "content-length": String(MAX_FETCH_RESPONSE_BYTES + 1),
+      "content-type": "text/plain",
+    },
+  });
+
+  try {
+    await assert.rejects(
+      fetchPage("http://93.184.216.34/large"),
+      /Response exceeds maximum size/,
+    );
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetch_page stops a chunked response when it exceeds the size limit", async () => {
+  const originalFetch = globalThis.fetch;
+  const chunk = new Uint8Array(MAX_FETCH_RESPONSE_BYTES + 1);
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(chunk);
+    },
+  }), { status: 200, headers: { "content-type": "text/plain" } });
+
+  try {
+    await assert.rejects(
+      fetchPage("http://93.184.216.34/large"),
+      /Response exceeds maximum size/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("fetch_page applies the allowlist to redirect destinations", async () => {
