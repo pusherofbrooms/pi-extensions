@@ -584,7 +584,7 @@ function delegatedPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan 
 Context packet:
 ${JSON.stringify(contextPacket)}
 
-Return only GoalAgentReport v1 JSON matching reportContractHint. Optional fields: proposedState, criteriaUpdates, blocker, wait, nextAction. Omit unused fields.`;
+Return only GoalAgentReport v1 JSON matching reportContractHint. Set confidence to exactly one of "low", "medium", or "high". Optional fields: proposedState, criteriaUpdates, blocker, wait, nextAction. Omit unused fields.`;
 }
 
 function observerPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan = selectGoalWorkflowPlan(scaffold)): string {
@@ -607,7 +607,7 @@ function observerPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan =
 Context packet:
 ${JSON.stringify(contextPacket)}
 
-Return only GoalAgentReport v1 JSON matching reportContractHint. Put observations in summary/evidence/factsToAdd, risks in risksToAdd, bottlenecks in blockersToAdd, and the worker recommendation in nextAction. Omit unused fields.`;
+Return only GoalAgentReport v1 JSON matching reportContractHint. Set confidence to exactly one of "low", "medium", or "high". Put observations in summary/evidence/factsToAdd, risks in risksToAdd, bottlenecks in blockersToAdd, and the worker recommendation in nextAction. Omit unused fields.`;
 }
 
 function researcherPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan = selectGoalWorkflowPlan(scaffold)): string {
@@ -630,7 +630,7 @@ function researcherPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflowPlan
 Context packet:
 ${JSON.stringify(contextPacket)}
 
-Return only GoalAgentReport v1 JSON matching reportContractHint. Put conclusions in findings, uncertainty in openQuestions, reusable guidance in recommendedDoctrine, durable updates in proposedState, and the worker recommendation in nextAction. Omit unused fields.`;
+Return only GoalAgentReport v1 JSON matching reportContractHint. Set confidence to exactly one of "low", "medium", or "high". Put conclusions in findings, uncertainty in openQuestions, reusable guidance in recommendedDoctrine, durable updates in proposedState, and the worker recommendation in nextAction. Omit unused fields.`;
 }
 
 async function loadAgentSystemPrompt(path: string): Promise<string> {
@@ -751,7 +751,7 @@ function strategicReviewPrompt(goal: StoredGoal, scaffold: GoalScaffold, workflo
 Context packet:
 ${JSON.stringify(contextPacket)}
 
-Return only GoalAgentReport v1 reviewer JSON matching reportContractHint with outcome=review_complete, summary, confidence, actions, evidence, verdict, findings, criteriaAssessment (empty if not used), and nextAction. Non-ready verdicts require unresolvedGaps.`;
+Return only GoalAgentReport v1 reviewer JSON matching reportContractHint with outcome=review_complete, summary, confidence (exactly "low", "medium", or "high"), actions, evidence, verdict, findings, criteriaAssessment (empty if not used), and nextAction. Non-ready verdicts require unresolvedGaps.`;
 }
 
 async function runScheduledStrategicReview(goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, thinkingLevel: AgentThinkingLevel, workflowPlan = selectGoalWorkflowPlan(scaffold), deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
@@ -793,7 +793,7 @@ ${JSON.stringify(contextPacket)}
 Worker report:
 ${JSON.stringify(workerReport)}
 
-Return only GoalAgentReport v1 reviewer JSON matching reportContractHint with outcome=review_complete, summary, confidence, actions, evidence, verdict, findings, and criteriaAssessment[{id,status,reason,evidence}]. Non-ready verdicts require unresolvedGaps; ready verdicts must omit them. Optional: commentary, scopeConcerns, phaseTransition.`;
+Return only GoalAgentReport v1 reviewer JSON matching reportContractHint with outcome=review_complete, summary, confidence (exactly "low", "medium", or "high"), actions, evidence, verdict, findings, and criteriaAssessment[{id,status,reason,evidence}]. Non-ready verdicts require unresolvedGaps; ready verdicts must omit them. Optional: commentary, scopeConcerns, phaseTransition.`;
 }
 
 async function runParentReview(goal: StoredGoal, workerReport: GoalAgentReport, scaffold: GoalScaffold, ctx: ExtensionContext, thinkingLevel: AgentThinkingLevel, deps: GoalRuntimeDeps = DEFAULT_GOAL_RUNTIME_DEPS): Promise<{ report: GoalAgentReport; sessionFile?: string }> {
