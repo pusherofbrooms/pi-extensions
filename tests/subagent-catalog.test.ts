@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { enumerateAgentCapabilities, formatAgentCapabilities, parseThinkingLevel } from "../subagents.ts";
+import registerSubagents, { enumerateAgentCapabilities, formatAgentCapabilities, parseThinkingLevel } from "../subagents.ts";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -35,6 +35,39 @@ test("project agents are only discovered for trusted projects", async (t) => {
 
 	const trusted = enumerateAgentCapabilities(project, "both", true);
 	assert.equal(trusted.find((agent) => agent.name === "local")?.source, "project");
+});
+
+test("non-interactive commands honor ctx.isProjectTrusted before exposing project agents", async (t) => {
+	const project = await mkdtemp(join(tmpdir(), "pi-subagents-command-trust-"));
+	t.after(() => rm(project, { recursive: true, force: true }));
+	const agentsDir = join(project, ".pi", "agents");
+	await mkdir(agentsDir, { recursive: true });
+	await writeFile(join(agentsDir, "local.md"), "---\nname: local\ndescription: Project agent\ntools: read\n---\nProject instructions.\n");
+
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+	const messages: string[] = [];
+	registerSubagents({
+		registerCommand(name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+			commands.set(name, command);
+		},
+		registerTool() {},
+		on() {},
+		sendMessage(message: { content: string }) {
+			messages.push(message.content);
+		},
+	} as never);
+	const agentsCommand = commands.get("agents");
+	assert.ok(agentsCommand);
+	const baseCtx = { cwd: project, hasUI: false, ui: { notify() {} } };
+
+	await agentsCommand.handler("", baseCtx);
+	assert.doesNotMatch(messages.at(-1) ?? "", /local \(project\)/);
+
+	await agentsCommand.handler("", { ...baseCtx, isProjectTrusted: () => false });
+	assert.doesNotMatch(messages.at(-1) ?? "", /local \(project\)/);
+
+	await agentsCommand.handler("", { ...baseCtx, isProjectTrusted: () => true });
+	assert.match(messages.at(-1) ?? "", /local \(project\)/);
 });
 
 test("agent thinking levels are normalized and invalid values fail clearly", () => {
