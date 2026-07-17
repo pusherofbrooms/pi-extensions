@@ -419,6 +419,15 @@ function reviewerCriteriaAssessmentGaps(criteria = [], criteriaAssessment = [], 
   return gaps;
 }
 
+// Normalize only deterministic, meaning-preserving shape mistakes. Validation remains strict.
+export function normalizeGoalAgentReportShape(report) {
+  if (!report || typeof report !== "object" || !Array.isArray(report.actions)) return report;
+  return {
+    ...report,
+    actions: report.actions.map((action) => typeof action === "string" ? { summary: action } : action),
+  };
+}
+
 export function validateGoalAgentReport(report) {
   if (!report || typeof report !== "object") throw new Error("Report must be an object.");
   if (report.schemaVersion !== 1) throw new Error("Report schemaVersion must be 1.");

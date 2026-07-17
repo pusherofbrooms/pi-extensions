@@ -68,7 +68,7 @@ function memoryDeps(reports, { now = "2026-01-01T00:00:00.000Z" } = {}) {
 
 const testHome = await mkdtemp(join(tmpdir(), "goal-integration-home-"));
 process.env.HOME = testHome;
-const { default: goalExtension, runDelegatedContinuation } = await import("../goal.ts");
+const { default: goalExtension, isNonRetryableContinuationError, runDelegatedContinuation } = await import("../goal.ts");
 
 async function seedCurrentGoal(cwd, goal) {
   const store = join(testHome, ".pi", "agent", "goals");
@@ -131,6 +131,37 @@ test("worker continuation persists checkpoints, iteration, and session reference
   assert.ok(!runOptions[0].tools.includes("bash_read_only"));
   assert.equal(runOptions[0].inlineExtensions, undefined);
   assert.equal(runOptions[0].thinkingLevel, "low");
+});
+
+test("valid and safely normalizable worker reports do not invoke model repair", async () => {
+  for (const actions of [[{ summary: "valid action" }], ["normalizable action"]]) {
+    const cwd = await mkdtemp(join(tmpdir(), "goal-integration-normalize-"));
+    const { deps, runOptions } = memoryDeps([report("worker", "progress", { actions })]);
+    await runDelegatedContinuation(api(), context(cwd), {
+      id: `goal-normalize-${runOptions.length}`,
+      version: 1, cwd, status: "active", objective: "Normalize safely", scaffold: "default",
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      stepCount: 0, maxIterations: 1, summary: "Start", checklist: [], criteria: [], reviews: [], nextAction: "Work", notes: [],
+    }, deps);
+    assert.equal(runOptions.length, 1, "worker must run once with no repair invocation");
+  }
+});
+
+test("failed report repair is non-retryable and does not rerun worker work", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "goal-integration-repair-fail-"));
+  const invalid = report("worker", "progress", { confidence: "invalid" });
+  const { deps, runOptions } = memoryDeps([invalid, invalid]);
+  await assert.rejects(
+    runDelegatedContinuation(api(), context(cwd), {
+      id: "goal-repair-fail", version: 1, cwd, status: "active", objective: "Do work once", scaffold: "default",
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      stepCount: 0, maxIterations: 1, summary: "Start", checklist: [], criteria: [], reviews: [], nextAction: "Work", notes: [],
+    }, deps),
+    (error) => isNonRetryableContinuationError(error),
+  );
+  assert.equal(runOptions.length, 2, "one worker run and one tool-free repair run");
+  assert.ok(runOptions[0].tools.includes("bash"));
+  assert.deepEqual(runOptions[1].tools, []);
 });
 
 test("observer report is checkpointed and handed to the worker", async () => {
