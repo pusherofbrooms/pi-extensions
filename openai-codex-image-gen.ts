@@ -90,15 +90,17 @@ function readConfigFile(path: string): ExtensionConfig {
 	}
 }
 
-function loadConfig(cwd: string): ExtensionConfig {
+export function loadConfig(cwd: string, projectTrusted = false): ExtensionConfig {
 	const globalPath = join(getAgentDir(), "extensions", "openai-codex-image-gen.json");
 	const globalConfig = readConfigFile(globalPath);
-	const projectConfig = readConfigFile(join(cwd, CONFIG_DIR_NAME, "extensions", "openai-codex-image-gen.json"));
+	const projectConfig = projectTrusted
+		? readConfigFile(join(cwd, CONFIG_DIR_NAME, "extensions", "openai-codex-image-gen.json"))
+		: {};
 	return { ...globalConfig, ...projectConfig };
 }
 
-function resolveSaveConfig(params: ToolParams, cwd: string): SaveConfig {
-	const config = loadConfig(cwd);
+function resolveSaveConfig(params: ToolParams, cwd: string, projectTrusted: boolean): SaveConfig {
+	const config = loadConfig(cwd, projectTrusted);
 	const envMode = (process.env.PI_OPENAI_IMAGE_SAVE_MODE || "").toLowerCase();
 	const mode = (params.save || envMode || config.save || DEFAULT_SAVE_MODE) as SaveMode;
 
@@ -125,8 +127,8 @@ function resolveSaveConfig(params: ToolParams, cwd: string): SaveConfig {
 	return { mode };
 }
 
-function resolveModel(params: ToolParams, ctx: { cwd: string; model?: { provider: string; id: string } }): string {
-	const config = loadConfig(ctx.cwd);
+function resolveModel(params: ToolParams, ctx: { cwd: string; model?: { provider: string; id: string } }, projectTrusted: boolean): string {
+	const config = loadConfig(ctx.cwd, projectTrusted);
 	if (params.model) return params.model;
 	if (process.env.PI_OPENAI_IMAGE_MODEL) return process.env.PI_OPENAI_IMAGE_MODEL;
 	if (config.model) return config.model;
@@ -134,13 +136,13 @@ function resolveModel(params: ToolParams, ctx: { cwd: string; model?: { provider
 	return DEFAULT_MODEL;
 }
 
-function resolveBaseUrl(cwd: string): string {
-	const config = loadConfig(cwd);
+function resolveBaseUrl(cwd: string, projectTrusted: boolean): string {
+	const config = loadConfig(cwd, projectTrusted);
 	return (config.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
 }
 
-function resolveCodexResponsesUrl(cwd: string): string {
-	const base = resolveBaseUrl(cwd);
+function resolveCodexResponsesUrl(cwd: string, projectTrusted: boolean): string {
+	const base = resolveBaseUrl(cwd, projectTrusted);
 	if (base.endsWith("/codex/responses")) return base;
 	if (base.endsWith("/codex")) return `${base}/responses`;
 	return `${base}/codex/responses`;
@@ -329,16 +331,17 @@ export default function openaiCodexImageGen(pi: ExtensionAPI) {
 		promptSnippet: "Generate an image from a text prompt using OpenAI Codex OAuth credentials.",
 		parameters: TOOL_PARAMS,
 		async execute(_toolCallId, params: ToolParams, signal, onUpdate, ctx) {
+			const projectTrusted = typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted() === true;
 			const token = await getOpenAICodexToken(ctx);
 			const accountId = extractAccountId(token);
-			const model = resolveModel(params, ctx);
+			const model = resolveModel(params, ctx, projectTrusted);
 
 			onUpdate?.({
 				content: [{ type: "text", text: `Requesting image from ${PROVIDER}/${model}...` }],
 				details: { provider: PROVIDER, model },
 			});
 
-			const response = await fetch(resolveCodexResponsesUrl(ctx.cwd), {
+			const response = await fetch(resolveCodexResponsesUrl(ctx.cwd, projectTrusted), {
 				method: "POST",
 				headers: buildHeaders(token, accountId),
 				body: JSON.stringify(buildRequestBody(params.prompt, model)),
@@ -351,7 +354,7 @@ export default function openaiCodexImageGen(pi: ExtensionAPI) {
 			}
 
 			const image = await parseSseForImage(response, signal);
-			const saveConfig = resolveSaveConfig(params, ctx.cwd);
+			const saveConfig = resolveSaveConfig(params, ctx.cwd, projectTrusted);
 			let savedPath: string | undefined;
 			let saveError: string | undefined;
 

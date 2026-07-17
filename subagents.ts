@@ -136,9 +136,9 @@ function loadDefaultAgents(): AgentConfig[] {
 	return loadAgentsFromDir(DEFAULT_AGENTS_DIR, "default");
 }
 
-function discoverAgents(cwd: string, scope: AgentScope): { agents: AgentConfig[]; projectAgentsDir: string | null } {
+function discoverAgents(cwd: string, scope: AgentScope, projectTrusted = false): { agents: AgentConfig[]; projectAgentsDir: string | null } {
 	const userDir = path.join(getAgentDir(), "agents");
-	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
+	const projectAgentsDir = projectTrusted ? findNearestProjectAgentsDir(cwd) : null;
 
 	const defaultAgents = loadDefaultAgents();
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
@@ -205,8 +205,8 @@ export interface AgentCapability {
 	source: "user" | "project" | "default";
 }
 
-export function enumerateAgentCapabilities(cwd: string, scope: AgentScope = "user"): AgentCapability[] {
-	return discoverAgents(cwd, scope).agents.map((agent) => ({
+export function enumerateAgentCapabilities(cwd: string, scope: AgentScope = "user", projectTrusted = false): AgentCapability[] {
+	return discoverAgents(cwd, scope, projectTrusted).agents.map((agent) => ({
 		name: agent.name,
 		description: agent.description,
 		tools: getToolNames(agent.tools),
@@ -376,8 +376,11 @@ const SubagentParams = Type.Object({
 
 export default function (pi: ExtensionAPI) {
 	const registeredAliasCommands = new Set<string>();
-	const agentCapabilityDescription = formatAgentCapabilities(enumerateAgentCapabilities(process.cwd(), "both"));
+	// Extension initialization has no trusted project context, so never inspect project agents here.
+	const agentCapabilityDescription = formatAgentCapabilities(enumerateAgentCapabilities(process.cwd(), "user"));
 	const reservedCommandNames = new Set(["agent", "agents", "subagent"]);
+	const isProjectTrusted = (ctx: any): boolean =>
+		typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted() === true;
 
 	const runAgentCommand = async (agentName: string, task: string, ctx: any) => {
 		if (!task.trim()) {
@@ -385,7 +388,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const discovery = discoverAgents(ctx.cwd, "both");
+		const discovery = discoverAgents(ctx.cwd, "both", isProjectTrusted(ctx));
 		const target = discovery.agents.find((a) => a.name === agentName);
 		if (!target) {
 			ctx.ui.notify(`Unknown agent: ${agentName}. Available: ${formatAgentList(discovery.agents)}`, "error");
@@ -445,8 +448,8 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	const registerAliasesForCwd = (cwd: string) => {
-		const discovery = discoverAgents(cwd, "both");
+	const registerAliasesForCwd = (cwd: string, projectTrusted: boolean) => {
+		const discovery = discoverAgents(cwd, "both", projectTrusted);
 		const existing = new Set(pi.getCommands().map((c) => c.name));
 		for (const agent of discovery.agents) {
 			const name = agent.name;
@@ -468,7 +471,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("agents", {
 		description: "List available subagents and their source",
 		handler: async (_args, ctx) => {
-			const discovery = discoverAgents(ctx.cwd, "both");
+			const discovery = discoverAgents(ctx.cwd, "both", isProjectTrusted(ctx));
 			if (discovery.agents.length === 0) {
 				ctx.ui.notify("No agents found.", "warning");
 				return;
@@ -502,7 +505,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		registerAliasesForCwd(ctx.cwd);
+		registerAliasesForCwd(ctx.cwd, isProjectTrusted(ctx));
 	});
 
 	pi.registerTool({
@@ -517,7 +520,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const parentThinkingLevel = pi.getThinkingLevel();
 			const agentScope: AgentScope = params.agentScope ?? "user";
-			const discovery = discoverAgents(ctx.cwd, agentScope);
+			const discovery = discoverAgents(ctx.cwd, agentScope, isProjectTrusted(ctx));
 			const agents = discovery.agents;
 
 			const hasChain = (params.chain?.length ?? 0) > 0;

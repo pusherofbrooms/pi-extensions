@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dirname } from "node:path";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { enumerateAgentCapabilities, formatAgentCapabilities, parseThinkingLevel } from "../subagents.ts";
 
@@ -18,6 +20,21 @@ test("subagent capability catalog exposes names, descriptions, and tools", () =>
 	assert.match(description, /use only these exact names/i);
 	assert.match(description, /scout .*tools: read, grep, find, ls/);
 	assert.match(description, /worker .*tools: .*edit/);
+});
+
+test("project agents are only discovered for trusted projects", async (t) => {
+	const project = await mkdtemp(join(tmpdir(), "pi-subagents-trust-"));
+	t.after(() => rm(project, { recursive: true, force: true }));
+	const agentsDir = join(project, ".pi", "agents");
+	await mkdir(agentsDir, { recursive: true });
+	await writeFile(join(agentsDir, "local.md"), "---\nname: local\ndescription: Project agent\ntools: read\n---\nProject instructions.\n");
+
+	const untrusted = enumerateAgentCapabilities(project, "both");
+	assert.equal(untrusted.some((agent) => agent.name === "local"), false);
+	assert.equal(untrusted.some((agent) => agent.source === "project"), false);
+
+	const trusted = enumerateAgentCapabilities(project, "both", true);
+	assert.equal(trusted.find((agent) => agent.name === "local")?.source, "project");
 });
 
 test("agent thinking levels are normalized and invalid values fail clearly", () => {
