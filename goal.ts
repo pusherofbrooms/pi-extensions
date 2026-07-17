@@ -10,6 +10,7 @@ import { Type } from "typebox";
 import { runAgentSession, type AgentThinkingLevel } from "./agent-runner.ts";
 import { createBashReadOnlyExtension } from "./bash-read-only.ts";
 import { detectSecret } from "./secret-detection.mjs";
+import { createStoredGoal } from "./goal-factory.ts";
 import { atomicWriteJson, withPersistenceLock } from "./goal-persistence.mjs";
 import { listScaffolds as listScaffoldsFromDirectories, loadScaffold as loadScaffoldFromDirectories, parseFrontmatter, scaffoldPolicyText } from "./goal-scaffolds.ts";
 import type { GoalAgentOutcome, GoalAgentReport, GoalCriterion, GoalCriterionStatus, GoalEvidenceRef, GoalIndex, GoalIteration, GoalPhase, GoalReview, GoalRoleCheckpoint, GoalRuntimeDeps, GoalScaffold, GoalStatus, GoalSubagentRole, GoalSubagentSessionRef, StoredGoal } from "./goal-types.ts";
@@ -1055,36 +1056,19 @@ export default function goalExtension(pi: ExtensionAPI) {
       }
 
       const scaffold = await loadScaffold(ctx.cwd, "default");
-      const goal = await writeGoal({
-        version: 1,
+      const goal = await writeGoal(createStoredGoal({
         id: makeId(),
         cwd: ctx.cwd,
         sessionFile: ctx.sessionManager.getSessionFile(),
-        status: "active",
         objective,
         scaffold: scaffold.id,
         createdAt: nowIso(),
         updatedAt: nowIso(),
-        stepCount: 0,
+        noteTimestamp: nowIso(),
+        noteText: "Goal created. Do not store secrets in goal notes.",
         maxIterations,
         reviewEvery: scaffold.policy.reviewEvery,
-        summary: "Goal created. No progress yet.",
-        checklist: [],
-        criteria: [],
-        reviews: [],
-        facts: [],
-        assumptions: [],
-        risks: [],
-        blockers: [],
-        blockerHistory: [],
-        doctrine: [],
-        evidence: [],
-        pinnedEvidence: [],
-        iterations: [],
-        nextAction: "Inspect the goal and choose the first concrete action.",
-        notes: [{ timestamp: nowIso(), text: "Goal created. Do not store secrets in goal notes." }],
-        continuationQueued: false,
-      });
+      }));
       updateStatus(ctx, goal);
       ctx.ui.notify(`Goal started. State: ${goalPath(goal.id)}`, "info");
       queueContinuation(pi, ctx, goal);
@@ -1234,36 +1218,19 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (secretError) throw new Error(`Refusing to store goal objective: ${secretError}.`);
       const scaffold = await loadScaffold(ctx.cwd, params.scaffold ?? recommendScaffoldId(params.objective));
       const maxIterations = typeof params.maxIterations === "number" && params.maxIterations > 0 ? Math.floor(params.maxIterations) : undefined;
-      const goal = await writeGoal({
-        version: 1,
+      const goal = await writeGoal(createStoredGoal({
         id: makeId(),
         cwd: ctx.cwd,
         sessionFile: ctx.sessionManager.getSessionFile(),
-        status: "active",
         objective: params.objective.trim(),
         scaffold: scaffold.id,
         createdAt: nowIso(),
         updatedAt: nowIso(),
-        stepCount: 0,
+        noteTimestamp: nowIso(),
+        noteText: "Goal created via goal_start tool. Do not store secrets in goal notes.",
         maxIterations,
         reviewEvery: scaffold.policy.reviewEvery,
-        summary: "Goal created. No progress yet.",
-        checklist: [],
-        criteria: [],
-        reviews: [],
-        facts: [],
-        assumptions: [],
-        risks: [],
-        blockers: [],
-        blockerHistory: [],
-        doctrine: [],
-        evidence: [],
-        pinnedEvidence: [],
-        iterations: [],
-        nextAction: "Inspect the goal and choose the first concrete action.",
-        notes: [{ timestamp: nowIso(), text: "Goal created via goal_start tool. Do not store secrets in goal notes." }],
-        continuationQueued: false,
-      });
+      }));
       updateStatus(ctx, goal);
       queueContinuation(pi, ctx, goal);
       return { content: [{ type: "text", text: `Goal started with scaffold ${scaffold.id}. State: ${goalPath(goal.id)}` }], details: { updated: true, scaffold, goal: goalForModel(goal), path: goalPath(goal.id) } };

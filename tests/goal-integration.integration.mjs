@@ -25,6 +25,7 @@ function context(cwd) {
     cwd,
     hasUI: false,
     model: undefined,
+    sessionManager: { getSessionFile: () => `/sessions/${cwd.split("/").at(-1)}.jsonl` },
     ui: { notify() {}, setStatus() {} },
     hasPendingMessages: () => false,
     isIdle: () => true,
@@ -81,17 +82,77 @@ function registeredExtension() {
   const tools = new Map();
   const commands = new Map();
   const entries = new Map();
+  const events = new Map();
   const appendedEntries = [];
   const pi = {
     registerCommand(name, command) { commands.set(name, command); },
     registerTool(tool) { tools.set(tool.name, tool); },
     registerEntryRenderer(name, renderer) { entries.set(name, renderer); },
     appendEntry(type, data) { appendedEntries.push({ type, data }); },
-    on() {},
+    on(name, handler) { events.set(name, handler); },
   };
   goalExtension(pi);
-  return { tools, commands, entries, appendedEntries };
+  return { tools, commands, entries, events, appendedEntries };
 }
+
+test("registered /goal and goal_start callers construct complete, caller-specific goal state", async () => {
+  const extension = registeredExtension();
+  // Prevent autonomous continuation from racing the construction assertions.
+  await extension.events.get("session_shutdown")();
+
+  const commandCwd = await mkdtemp(join(tmpdir(), "goal-integration-command-start-"));
+  await extension.commands.get("goal").handler("--max 12   Ship the command objective  ", context(commandCwd));
+  const commandResult = await extension.tools.get("get_goal").execute("command-goal", {}, undefined, undefined, context(commandCwd));
+  assert.deepEqual({
+    objective: commandResult.details.goal.objective,
+    scaffold: commandResult.details.goal.scaffold,
+    maxIterations: commandResult.details.goal.maxIterations,
+    reviewEvery: commandResult.details.goal.reviewEvery,
+    note: commandResult.details.goal.notes[0].text,
+  }, {
+    objective: "Ship the command objective",
+    scaffold: "default",
+    maxIterations: 12,
+    reviewEvery: undefined,
+    note: "Goal created. Do not store secrets in goal notes.",
+  });
+
+  const explicitCwd = await mkdtemp(join(tmpdir(), "goal-integration-tool-explicit-"));
+  const explicit = await extension.tools.get("goal_start").execute("explicit-goal", {
+    objective: "  Close explicit gaps  ", approved: true, scaffold: "zenith", maxIterations: 7.9,
+  }, undefined, undefined, context(explicitCwd));
+  assert.deepEqual({
+    objective: explicit.details.goal.objective,
+    scaffold: explicit.details.goal.scaffold,
+    maxIterations: explicit.details.goal.maxIterations,
+    reviewEvery: explicit.details.goal.reviewEvery,
+    note: explicit.details.goal.notes[0].text,
+  }, {
+    objective: "Close explicit gaps",
+    scaffold: "zenith",
+    maxIterations: 7,
+    reviewEvery: 5,
+    note: "Goal created via goal_start tool. Do not store secrets in goal notes.",
+  });
+
+  const recommendedCwd = await mkdtemp(join(tmpdir(), "goal-integration-tool-recommended-"));
+  const recommended = await extension.tools.get("goal_start").execute("recommended-goal", {
+    objective: "Build a long-horizon release", approved: true,
+  }, undefined, undefined, context(recommendedCwd));
+  assert.deepEqual({
+    objective: recommended.details.goal.objective,
+    scaffold: recommended.details.goal.scaffold,
+    maxIterations: recommended.details.goal.maxIterations,
+    reviewEvery: recommended.details.goal.reviewEvery,
+    note: recommended.details.goal.notes[0].text,
+  }, {
+    objective: "Build a long-horizon release",
+    scaffold: "zenith",
+    maxIterations: undefined,
+    reviewEvery: 5,
+    note: "Goal created via goal_start tool. Do not store secrets in goal notes.",
+  });
+});
 
 test("worker continuation persists checkpoints, iteration, and session reference", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "goal-integration-"));
