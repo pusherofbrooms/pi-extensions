@@ -22,7 +22,7 @@
 
           shellHook = ''
             echo "Pi extension test shell"
-            echo "Run tests with: node --test tests/*.test.mjs"
+            echo "Run all validation with: npm run check"
           '';
         };
       }

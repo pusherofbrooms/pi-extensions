@@ -218,11 +218,13 @@ Only flat `key: value` frontmatter is parsed. The Markdown body is injected into
 
 This repo includes lightweight unit tests for pure extension support logic.
 
-Run with Nix:
+Run the complete local validation suite (typecheck, unit tests, mocked integration tests, and the focused secret-detection check) with Nix:
 
 ```bash
-nix develop --command npm test
+nix develop --command npm run check
 ```
+
+The same command runs in CI. Individual suites are available as `npm run test:unit`, `npm run test:integration`, and `npm run test:secrets`.
 
 Current tests include:
 - `tests/bash-read-only.test.ts` (policy, confinement, and no-shell execution)
@@ -236,9 +238,7 @@ Recommended test strategy for extensions:
 1. **Unit tests** for pure logic (regex/policy decision code).
 2. **Mocked integration tests** for `/goal` orchestration without LLM calls:
    ```bash
-   nix develop --command node --experimental-strip-types \
-     --experimental-loader ./tests/goal-integration-loader.mjs \
-     --test tests/goal-integration.integration.mjs
+   nix develop --command npm run test:integration
    ```
 3. **Targeted smoke tests** in a real `pi` session for event-hook behavior.
 

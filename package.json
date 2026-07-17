@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --import tsx --test tests/*.test.mjs tests/*.test.ts",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "node --import tsx --test tests/*.test.mjs tests/*.test.ts",
+    "test:integration": "node --import tsx --test tests/*.integration.mjs",
+    "test:secrets": "node --import tsx --test tests/secret-detection.test.mjs",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test && npm run test:secrets"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.10",

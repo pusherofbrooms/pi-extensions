@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Validate flake
+        run: nix flake check
+      - name: Install dependencies
+        run: nix develop --command npm ci
+      - name: Typecheck and test
+        run: nix develop --command npm run check
