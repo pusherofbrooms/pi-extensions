@@ -10,9 +10,10 @@ import { Type } from "typebox";
 import { runAgentSession, type AgentThinkingLevel, type RunAgentSessionOptions } from "./agent-runner.ts";
 import { createBashReadOnlyExtension } from "./bash-read-only.ts";
 import { detectSecret } from "./secret-detection.mjs";
+import { atomicWriteJson, withPersistenceLock } from "./goal-persistence.mjs";
 import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, currentGoalPhase, formatEvidenceRefs, isTerminalGoal, nextGoalPhase, normalizeCriteriaInputs, normalizeGoal, normalizePhases, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -352,7 +353,7 @@ async function listScaffolds(cwd: string): Promise<GoalScaffold[]> {
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await ensureStore();
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await atomicWriteJson(path, value);
 }
 
 async function readIndex(): Promise<GoalIndex> {
@@ -419,9 +420,11 @@ async function writeGoal(goal: StoredGoal): Promise<StoredGoal> {
 }
 
 async function mutateCurrentGoal(cwd: string, mutator: (goal: StoredGoal) => StoredGoal): Promise<StoredGoal | undefined> {
-  const current = await readCurrentGoal(cwd);
-  if (!current) return undefined;
-  return writeGoal(mutator(current));
+  return withPersistenceLock(cwd, async () => {
+    const current = await readCurrentGoal(cwd);
+    if (!current) return undefined;
+    return writeGoal(mutator(current));
+  });
 }
 
 async function reloadRuntime(ctx: ExtensionContext): Promise<StoredGoal | undefined> {
