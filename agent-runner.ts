@@ -107,7 +107,10 @@ export async function runAgentSession(options: RunAgentSessionOptions): Promise<
 
   const unsubscribe = session.subscribe((event) => {
     if (event.type !== "message_end") return;
-    result.messages.push(event.message);
+    // Pi sessions can emit extension-specific messages; this runner only exposes
+    // the standard message shape used by its public result contract.
+    const message = event.message as Message;
+    result.messages.push(message);
     result.finalText = getFinalAssistantText(result.messages);
 
     if (event.message.role === "assistant") {
@@ -126,7 +129,7 @@ export async function runAgentSession(options: RunAgentSessionOptions): Promise<
       if (event.message.errorMessage) result.errorMessage = event.message.errorMessage;
     }
 
-    options.onMessageEnd?.(result, event.message);
+    options.onMessageEnd?.(result, message);
   });
 
   const abortHandler = async () => {

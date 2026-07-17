@@ -1078,7 +1078,12 @@ get_goal, goal_inspect_session, goal_note, goal_criteria, goal_criterion_update,
 }
 
 export default function goalExtension(pi: ExtensionAPI) {
-  pi.registerEntryRenderer("goal-command", (entry) => new UserMessageComponent(entry.data?.text ?? ""));
+  pi.registerEntryRenderer("goal-command", (entry) => {
+    const text = typeof entry.data === "object" && entry.data !== null && "text" in entry.data
+      ? String(entry.data.text ?? "")
+      : "";
+    return new UserMessageComponent(text);
+  });
 
   pi.registerCommand("goal", {
     description: "Set, inspect, pause, resume, clear, or complete a tool-backed autonomous goal.",

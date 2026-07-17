@@ -185,7 +185,11 @@ export function parseThinkingLevel(value: unknown): AgentThinkingLevel | undefin
 	throw new Error(`Invalid agent thinking level '${value}'. Expected off, minimal, low, medium, high, xhigh, or max.`);
 }
 
-function resolveModel(spec: string | undefined, ctx: Parameters<NonNullable<ExtensionAPI["registerTool"]>["0"]["execute"]>[4]): Model<any> | undefined {
+type ToolExecute = Parameters<ExtensionAPI["registerTool"]>[0]["execute"];
+type ToolContext = Parameters<ToolExecute>[4];
+type ToolOnUpdate = Parameters<ToolExecute>[3];
+
+function resolveModel(spec: string | undefined, ctx: ToolContext): Model<any> | undefined {
 	if (!spec) return undefined;
 	const clean = spec.trim();
 	if (!clean.includes("/")) return undefined;
@@ -261,8 +265,8 @@ async function runSingleAgent(
 	runCwd: string | undefined,
 	step: number | undefined,
 	signal: AbortSignal | undefined,
-	ctx: Parameters<NonNullable<ExtensionAPI["registerTool"]>["0"]["execute"]>[4],
-	onUpdate: Parameters<NonNullable<ExtensionAPI["registerTool"]>["0"]["execute"]>[3],
+	ctx: ToolContext,
+	onUpdate: ToolOnUpdate,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	parentThinkingLevel: AgentThinkingLevel,
 ): Promise<SingleResult> {
