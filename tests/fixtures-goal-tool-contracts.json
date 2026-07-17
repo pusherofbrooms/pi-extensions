@@ -1,0 +1,608 @@
+[
+  {
+    "name": "get_goal",
+    "label": "Get Goal",
+    "description": "Read the current autonomous goal state when explicitly working on an active, blocked, or paused goal. Terminal goals return a short no-active-goal response.",
+    "promptSnippet": "Read the current active goal objective, lifecycle status, success criteria, evidence, reviews, blockers, progress notes, checklist, and next action.",
+    "promptGuidelines": [
+      "Use get_goal only for explicit goal-related work or autonomous goal continuation turns; do not call it for unrelated repository conversations.",
+      "If the response begins with NO_ACTIVE_GOAL, do not treat the terminal goal as current working context unless the user explicitly asks about its history.",
+      "When a goal mentions phases, passes, milestones, or numbered steps, treat them as separate autonomous iterations unless the user explicitly says to do them all in one turn."
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "goal_inspect_session",
+    "label": "Goal Inspect Session",
+    "description": "Inspect a persisted subagent session referenced by the current goal iteration log. Use this for targeted audit/debugging without bloating durable goal state.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "sessionFile": {
+          "type": "string",
+          "description": "Exact sessionFile path from a current goal iteration. Defaults to the most recent referenced session."
+        },
+        "maxChars": {
+          "type": "number",
+          "description": "Maximum trailing characters to return; default 12000, capped at 50000."
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_list_scaffolds",
+    "label": "Goal List Scaffolds",
+    "description": "List available /goal scaffolds with their merge/review policy. Use before choosing a scaffold for a new or current goal.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "goal_get_scaffold",
+    "label": "Goal Get Scaffold",
+    "description": "Inspect a /goal scaffold's instructions and merge/review policy.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Scaffold id, such as default, operations, or zenith."
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_set_scaffold",
+    "label": "Goal Set Scaffold",
+    "description": "Set the scaffold for the current goal. Use after inspecting/recommending a scaffold or when the user asks for a specific one.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Scaffold id to set on the current goal."
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_recommend_scaffold",
+    "label": "Goal Recommend Scaffold",
+    "description": "Recommend an existing scaffold for a proposed objective. This does not start or modify a goal.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "objective"
+      ],
+      "properties": {
+        "objective": {
+          "type": "string",
+          "description": "Goal objective to classify."
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_start",
+    "label": "Goal Start",
+    "description": "Start a new autonomous goal after explicit user approval. Do not use proactively; first recommend the objective/scaffold and ask the user to approve.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "objective",
+        "approved"
+      ],
+      "properties": {
+        "objective": {
+          "type": "string",
+          "description": "Approved goal objective."
+        },
+        "approved": {
+          "type": "boolean",
+          "description": "Must be true after explicit user approval to start the goal."
+        },
+        "scaffold": {
+          "type": "string",
+          "description": "Optional scaffold id. Defaults to recommended/default."
+        },
+        "maxIterations": {
+          "type": "number",
+          "description": "Optional positive iteration cap."
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_note",
+    "label": "Goal Note",
+    "description": "Update progress notes and structured memory for the current autonomous goal without changing lifecycle fields like status or stepCount.",
+    "promptSnippet": "Update autonomous goal progress notes, structured facts/assumptions/risks/blockers/evidence, checklist, summary, and next action after meaningful progress.",
+    "promptGuidelines": [
+      "Use goal_note after each meaningful autonomous-goal iteration to record what changed, evidence gathered, and the next hand-off action.",
+      "Use structured facts, assumptions, risks, blockers, and evidence fields to keep long-horizon state curated rather than buried in notes.",
+      "For multi-phase goals, complete one phase/pass/milestone, call goal_note, then stop so the next autonomous continuation can take the next phase."
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "Concise current summary of progress."
+        },
+        "checklist": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "text",
+              "done"
+            ],
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "Checklist item text."
+              },
+              "done": {
+                "type": "boolean",
+                "description": "Whether this checklist item is complete."
+              },
+              "evidence": {
+                "type": "string",
+                "description": "Brief evidence, command, file, or result."
+              }
+            }
+          },
+          "description": "Replacement checklist for the goal."
+        },
+        "nextAction": {
+          "type": "string",
+          "description": "Next concrete action for the following iteration."
+        },
+        "note": {
+          "type": "string",
+          "description": "Append a concise progress note."
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Replacement durable facts list."
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Replacement assumptions list."
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Replacement risks list."
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Replacement blockers list."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Replacement evidence list."
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_phases",
+    "label": "Goal Phases",
+    "description": "Create or replace ordered phase gates for the current goal. Only the current phase is actionable; the orchestrator advances phases after reviewer verification.",
+    "promptSnippet": "Define ordered, evidence-gated phases for a long-running goal.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "phases"
+      ],
+      "properties": {
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "title",
+              "objective"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "objective": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "active",
+                  "passed",
+                  "blocked"
+                ]
+              },
+              "criterionIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "scaffold": {
+                "type": "string"
+              },
+              "nextAction": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_criteria",
+    "label": "Goal Criteria",
+    "description": "Create or replace evidence-bearing success criteria for the current goal.",
+    "promptSnippet": "Define falsifiable success criteria for complex or long-horizon goals.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "criteria"
+      ],
+      "properties": {
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "passed",
+                  "failed"
+                ]
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "phaseId": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_criterion_update",
+    "label": "Goal Criterion Update",
+    "description": "Update status and evidence for existing goal success criteria.",
+    "promptSnippet": "Mark success criteria pending, failed, or passed with concrete evidence.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "updates"
+      ],
+      "properties": {
+        "updates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "status"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "passed",
+                  "failed"
+                ]
+              },
+              "evidence": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_review",
+    "label": "Goal Review",
+    "description": "Record a terminal-readiness or strategic review for the current goal.",
+    "promptSnippet": "Review goal alignment, evidence, gaps, and readiness before completion.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "verdict",
+        "findings",
+        "evidenceSummary"
+      ],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "ready_to_complete",
+            "not_ready",
+            "blocked"
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unresolvedGaps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidenceSummary": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "ref",
+              "summary"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "command",
+                  "file",
+                  "test",
+                  "url",
+                  "session",
+                  "observation",
+                  "artifact"
+                ]
+              },
+              "ref": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "passed",
+                  "failed",
+                  "observed",
+                  "created",
+                  "modified",
+                  "not_run"
+                ]
+              },
+              "summary": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "phaseTransition": {
+          "type": "object",
+          "required": [
+            "toPhaseId"
+          ],
+          "properties": {
+            "toPhaseId": {
+              "type": "string"
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "ref",
+                  "summary"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "command",
+                      "file",
+                      "test",
+                      "url",
+                      "session",
+                      "observation",
+                      "artifact"
+                    ]
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "passed",
+                      "failed",
+                      "observed",
+                      "created",
+                      "modified",
+                      "not_run"
+                    ]
+                  },
+                  "summary": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "criteriaAssessment": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "proven",
+                  "not_proven",
+                  "contradicted",
+                  "missing_evidence"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "ref",
+                    "summary"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "command",
+                        "file",
+                        "test",
+                        "url",
+                        "session",
+                        "observation",
+                        "artifact"
+                      ]
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "passed",
+                        "failed",
+                        "observed",
+                        "created",
+                        "modified",
+                        "not_run"
+                      ]
+                    },
+                    "summary": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "goal_block",
+    "label": "Goal Block",
+    "description": "Mark the current goal blocked with a concrete reason and needed user/runtime action.",
+    "promptSnippet": "Use when missing information or unsafe conditions prevent productive continuation.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "neededFromUser": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "update_goal",
+    "label": "Update Goal",
+    "description": "Mark the active autonomous goal complete after success criteria and terminal review prove readiness. The model may only set status to complete; pause/resume/clear are user-controlled.",
+    "promptSnippet": "Mark the active autonomous goal complete only after all criteria are passed with evidence and goal_review records ready_to_complete.",
+    "promptGuidelines": [
+      "Do not use update_goal until all requested phases, passes, milestones, or success criteria are complete and verified with concrete evidence.",
+      "Before update_goal, use goal_review with verdict ready_to_complete and ensure every success criterion is passed with evidence.",
+      "If any next phase, unresolved gap, blocker, or stretch goal remains, use goal_note, goal_review, or goal_block instead of update_goal and leave a clear next action."
+    ],
+    "parameters": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete"
+          ],
+          "description": "Only 'complete' is accepted."
+        }
+      }
+    }
+  }
+]
