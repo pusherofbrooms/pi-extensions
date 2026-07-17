@@ -147,6 +147,42 @@ test("valid and safely normalizable worker reports do not invoke model repair", 
   }
 });
 
+test("malformed output is repaired once with the same system prompt, no tools, and repair provenance", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "goal-integration-repair-"));
+  const invalid = report("worker", "progress", { confidence: "invalid" });
+  const { deps, runOptions, writes } = memoryDeps([invalid, report("worker")]);
+  await runDelegatedContinuation(api(), context(cwd), {
+    id: "goal-repair", version: 1, cwd, status: "active", objective: "Repair report", scaffold: "default",
+    createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    stepCount: 0, maxIterations: 1, summary: "Start", checklist: [], criteria: [], reviews: [], nextAction: "Work", notes: [],
+  }, deps);
+  assert.equal(runOptions.length, 2);
+  assert.deepEqual(runOptions[1].tools, []);
+  assert.equal(runOptions[1].systemPrompt, runOptions[0].systemPrompt);
+  assert.match(runOptions[0].prompt, /reportContractHint/);
+  assert.match(runOptions[0].prompt, /criteriaAssessment/);
+  assert.match(runOptions[1].prompt, /Existing output:/);
+  assert.match(runOptions[1].prompt, /Validator feedback:/);
+  assert.match(runOptions[1].prompt, /"confidence":"invalid"/);
+  assert.equal(writes.at(-1).roleCheckpoints.find((item) => item.provenance === "repair")?.sessionFile, "fake-session-2.json");
+  assert.equal(writes.at(-1).iterations.at(-1).sessionRefs.find((item) => item.provenance === "repair")?.sessionFile, "fake-session-2.json");
+});
+
+test("secret-bearing malformed and repaired output is rejected without further attempts", async () => {
+  const baseGoal = (cwd, id) => ({ id, version: 1, cwd, status: "active", objective: "Reject secrets", scaffold: "default", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", stepCount: 0, maxIterations: 1, summary: "Start", checklist: [], criteria: [], reviews: [], nextAction: "Work", notes: [] });
+  const cwd1 = await mkdtemp(join(tmpdir(), "goal-integration-secret-raw-"));
+  const rawSecret = report("worker", "progress", { confidence: "invalid", summary: "credential AKIA1234567890ABCDEF" });
+  const first = memoryDeps([rawSecret]);
+  await assert.rejects(runDelegatedContinuation(api(), context(cwd1), baseGoal(cwd1, "raw-secret"), first.deps), (error) => isNonRetryableContinuationError(error));
+  assert.equal(first.runOptions.length, 1);
+
+  const cwd2 = await mkdtemp(join(tmpdir(), "goal-integration-secret-repair-"));
+  const repairedSecret = report("worker", "progress", { summary: "credential AKIA1234567890ABCDEF" });
+  const second = memoryDeps([report("worker", "progress", { confidence: "invalid" }), repairedSecret]);
+  await assert.rejects(runDelegatedContinuation(api(), context(cwd2), baseGoal(cwd2, "repair-secret"), second.deps), (error) => isNonRetryableContinuationError(error));
+  assert.equal(second.runOptions.length, 2);
+});
+
 test("failed report repair is non-retryable and does not rerun worker work", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "goal-integration-repair-fail-"));
   const invalid = report("worker", "progress", { confidence: "invalid" });

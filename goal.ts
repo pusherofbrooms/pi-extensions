@@ -7,13 +7,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { runAgentSession, type AgentThinkingLevel, type RunAgentSessionOptions } from "./agent-runner.ts";
+import { runAgentSession, type AgentThinkingLevel } from "./agent-runner.ts";
 import { createBashReadOnlyExtension } from "./bash-read-only.ts";
 import { detectSecret } from "./secret-detection.mjs";
 import { atomicWriteJson, withPersistenceLock } from "./goal-persistence.mjs";
+import { listScaffolds as listScaffoldsFromDirectories, loadScaffold as loadScaffoldFromDirectories, parseFrontmatter, scaffoldPolicyText } from "./goal-scaffolds.ts";
+import type { GoalAgentOutcome, GoalAgentReport, GoalCriterion, GoalCriterionStatus, GoalEvidenceRef, GoalIndex, GoalIteration, GoalPhase, GoalReview, GoalRoleCheckpoint, GoalRuntimeDeps, GoalScaffold, GoalStatus, GoalSubagentRole, GoalSubagentSessionRef, StoredGoal } from "./goal-types.ts";
 import { appendGoalRoleCheckpoint, applyCriterionUpdates, applyGoalAgentReport, applyGoalReviewerReport, buildGoalContextPacket, completionReadiness, currentGoalPhase, formatEvidenceRefs, isTerminalGoal, nextGoalPhase, normalizeCriteriaInputs, normalizeGoal, normalizeGoalAgentReportShape, normalizePhases, recommendScaffoldId, selectGoalWorkflowPlan, validateGoalAgentReport } from "./goal-core.mjs";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,226 +34,15 @@ const USER_SCAFFOLDS_DIR = join(getAgentDir(), "scaffolds");
 const PROJECT_SCAFFOLDS_DIR = join(CONFIG_DIR_NAME, "scaffolds");
 const INDEX_PATH = join(STORE_DIR, "index.json");
 
-type GoalStatus = "active" | "paused" | "blocked" | "complete" | "cleared";
-
-type GoalCriterionStatus = "pending" | "passed" | "failed";
-
-type GoalCriterion = {
-  id: string;
-  text: string;
-  status: GoalCriterionStatus;
-  evidence?: string;
-  phaseId?: string;
-};
-
-type GoalPhase = {
-  id: string;
-  title: string;
-  objective: string;
-  status: "pending" | "active" | "passed" | "blocked";
-  criterionIds: string[];
-  scaffold?: string;
-  nextAction?: string;
-};
-
-type GoalReviewVerdict = "ready_to_complete" | "not_ready" | "blocked";
-
-type GoalReview = {
-  timestamp: string;
-  kind?: "terminal" | "strategic" | "phase_gate";
-  verdict: GoalReviewVerdict;
-  findings: string[];
-  unresolvedGaps?: string[];
-  evidenceSummary: string;
-  evidence?: GoalEvidenceRef[];
-  criteriaAssessment?: GoalAgentReport["criteriaAssessment"];
-};
-
-type GoalChecklistItem = {
-  text: string;
-  done: boolean;
-  evidence?: string;
-};
-
-type GoalNoteEntry = {
-  timestamp: string;
-  text: string;
-};
-
-type GoalBlockerHistoryEntry = {
-  timestamp: string;
-  status: "active" | "potential" | "resolved";
-  reason: string;
-  needed?: string;
-  evidence?: string[];
-};
-
-type GoalSubagentRole = "worker" | "reviewer" | "observer" | "researcher" | "experimenter";
-
-type GoalSubagentSessionRef = {
-  role: GoalSubagentRole;
-  timestamp: string;
-  sessionFile?: string;
-  provenance?: "primary" | "repair";
-};
-
-type GoalAgentOutcome = "progress" | "no_progress" | "waiting" | "blocked" | "ready_for_review" | "review_complete";
-
-type GoalEvidenceRef = {
-  kind: "command" | "file" | "test" | "url" | "session" | "observation" | "artifact";
-  ref: string;
-  summary: string;
-  status?: "passed" | "failed" | "observed" | "created" | "modified" | "not_run";
-};
-
-type GoalAgentReport = {
-  schemaVersion: 1;
-  role: GoalSubagentRole;
-  outcome: GoalAgentOutcome;
-  summary: string;
-  confidence: "low" | "medium" | "high";
-  actions: { summary: string; evidence?: GoalEvidenceRef[] }[];
-  evidence: GoalEvidenceRef[];
-  proposedState?: {
-    factsToAdd?: string[];
-    assumptionsToAdd?: string[];
-    risksToAdd?: string[];
-    blockersToAdd?: string[];
-    evidenceToAdd?: GoalEvidenceRef[];
-    pinnedEvidenceToAdd?: GoalEvidenceRef[];
-    checklist?: GoalChecklistItem[];
-  };
-  criteriaUpdates?: {
-    operation: "add" | "update_status";
-    id?: string;
-    text?: string;
-    status?: GoalCriterionStatus;
-    evidence?: GoalEvidenceRef[];
-    phaseId?: string;
-  }[];
-  blocker?: { reason: string; needed: string; evidence: GoalEvidenceRef[] };
-  wait?: { condition: string; resumeTrigger: string };
-  nextAction?: string;
-  verdict?: "ready_to_complete" | "not_ready" | "blocked";
-  commentary?: string;
-  findings?: string[];
-  unresolvedGaps?: string[];
-  criteriaAssessment?: { id: string; status: "proven" | "not_proven" | "contradicted" | "missing_evidence"; reason: string; evidence?: GoalEvidenceRef[] }[];
-  phaseTransition?: { toPhaseId: string; evidence?: GoalEvidenceRef[] };
-  scopeConcerns?: string[];
-  openQuestions?: string[];
-  recommendedDoctrine?: string[];
-};
-
-type GoalRoleCheckpoint = {
-  iteration: number;
-  role: GoalSubagentRole;
-  status: "completed" | "failed";
-  timestamp: string;
-  summary?: string;
-  evidence?: string[];
-  sessionFile?: string;
-  provenance?: "primary" | "repair";
-  error?: string;
-};
-
-type GoalIteration = {
-  step: number;
-  timestamp: string;
-  roles: Array<GoalSubagentSessionRef["role"]>;
-  outcome: GoalAgentOutcome;
-  summary: string;
-  evidence: string[];
-  nextAction: string;
-  sessionRefs: GoalSubagentSessionRef[];
-};
-
-type StoredGoal = {
-  version: 1;
-  id: string;
-  cwd: string;
-  sessionFile?: string;
-  status: GoalStatus;
-  objective: string;
-  scaffold?: string;
-  createdAt: string;
-  updatedAt: string;
-  stepCount: number;
-  maxIterations?: number;
-  stopReason?: string;
-  summary: string;
-  checklist: GoalChecklistItem[];
-  criteria?: GoalCriterion[];
-  phases?: GoalPhase[];
-  currentPhaseId?: string;
-  reviews?: GoalReview[];
-  facts?: string[];
-  assumptions?: string[];
-  risks?: string[];
-  blockers?: string[];
-  blockerHistory?: GoalBlockerHistoryEntry[];
-  doctrine?: string[];
-  evidence?: string[];
-  pinnedEvidence?: string[];
-  roleCheckpoints?: GoalRoleCheckpoint[];
-  iterations?: GoalIteration[];
-  reviewEvery?: number;
-  lastReviewStep?: number;
-  nextAction: string;
-  notes: GoalNoteEntry[];
-  continuationQueued?: boolean;
-  lastContinuationAt?: number;
-};
-
-type GoalIndex = {
-  version: 1;
-  byCwd: Record<string, string>;
-};
-
 let runtime: StoredGoal | undefined;
 let shuttingDown = false;
 
-type ScaffoldPolicy = {
-  goalShape?: string;
-  workflow?: string;
-  reviewEvery?: number;
-  completionPolicy?: string;
-  blockedPolicy?: string;
-  waitingAllowed?: boolean;
-  mergePolicy?: string;
-};
-
-type GoalScaffold = {
-  id: string;
-  name: string;
-  description: string;
-  body: string;
-  source: "bundled" | "user" | "project";
-  path?: string;
-  policy: ScaffoldPolicy;
-};
-
-export type GoalRuntimeDeps = {
-  runAgent: (options: RunAgentSessionOptions) => ReturnType<typeof runAgentSession>;
-  now: () => string;
-  writeGoal: (goal: StoredGoal) => Promise<StoredGoal>;
-};
+export type { GoalRuntimeDeps } from "./goal-types.ts";
 
 const DEFAULT_GOAL_RUNTIME_DEPS: GoalRuntimeDeps = {
   runAgent: runAgentSession,
   now: nowIso,
   writeGoal,
-};
-
-
-
-const FALLBACK_DEFAULT_SCAFFOLD: GoalScaffold = {
-  id: "default",
-  name: "Default",
-  description: "Generic coherent progress for ordinary goals.",
-  body: "Complete one coherent, bounded unit of progress, record evidence, and stop.",
-  source: "bundled",
-  policy: { goalShape: "general", workflow: "worker", completionPolicy: "parent-review", blockedPolicy: "external-blocker-only", waitingAllowed: false, mergePolicy: "evidence-first" },
 };
 
 function nowIso(): string {
@@ -277,80 +68,16 @@ async function readJson<T>(path: string): Promise<T | undefined> {
   return JSON.parse(await readFile(path, "utf8")) as T;
 }
 
-function parseFrontmatter(raw: string): { data: Record<string, string>; body: string } {
-  if (!raw.startsWith("---\n")) return { data: {}, body: raw };
-  const end = raw.indexOf("\n---\n", 4);
-  if (end === -1) return { data: {}, body: raw };
-  const data: Record<string, string> = {};
-  for (const line of raw.slice(4, end).split("\n")) {
-    const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (match) data[match[1]] = match[2].replace(/^['\"]|['\"]$/g, "");
-  }
-  return { data, body: raw.slice(end + 5).trim() };
+function scaffoldDirectories(cwd: string) {
+  return { bundled: BUNDLED_SCAFFOLDS_DIR, user: USER_SCAFFOLDS_DIR, project: join(cwd, PROJECT_SCAFFOLDS_DIR) };
 }
 
-function parseBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (["true", "yes", "1"].includes(value.toLowerCase())) return true;
-  if (["false", "no", "0"].includes(value.toLowerCase())) return false;
-  return undefined;
+function loadScaffold(cwd: string, id = "default"): Promise<GoalScaffold> {
+  return loadScaffoldFromDirectories(scaffoldDirectories(cwd), id);
 }
 
-function parseScaffoldPolicy(data: Record<string, string>): ScaffoldPolicy {
-  return {
-    goalShape: data.goalShape,
-    workflow: data.workflow,
-    reviewEvery: parsePositiveInt(data.reviewEvery),
-    completionPolicy: data.completionPolicy,
-    blockedPolicy: data.blockedPolicy,
-    waitingAllowed: parseBoolean(data.waitingAllowed),
-    mergePolicy: data.mergePolicy,
-  };
-}
-
-function scaffoldPolicyText(scaffold: GoalScaffold): string {
-  const entries = Object.entries(scaffold.policy).filter(([, value]) => value !== undefined && value !== "");
-  return entries.length ? entries.map(([key, value]) => `- ${key}: ${value}`).join("\n") : "- No explicit policy.";
-}
-
-async function readScaffoldFile(baseDir: string, id: string, source: GoalScaffold["source"]): Promise<GoalScaffold | undefined> {
-  const path = join(baseDir, id, "SCAFFOLD.md");
-  if (!existsSync(path)) return undefined;
-  const raw = await readFile(path, "utf8");
-  const { data, body } = parseFrontmatter(raw);
-  return { id: data.name ?? id, name: data.title ?? data.name ?? id, description: data.description ?? "Custom goal scaffold.", body, source, path, policy: parseScaffoldPolicy(data) };
-}
-
-async function listScaffoldsFromDir(baseDir: string, source: GoalScaffold["source"]): Promise<GoalScaffold[]> {
-  if (!existsSync(baseDir)) return [];
-  const scaffolds: GoalScaffold[] = [];
-  for (const entry of await readdir(baseDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const scaffold = await readScaffoldFile(baseDir, entry.name, source);
-    if (scaffold) scaffolds.push(scaffold);
-  }
-  return scaffolds;
-}
-
-async function loadScaffold(cwd: string, id = "default"): Promise<GoalScaffold> {
-  const project = await readScaffoldFile(join(cwd, PROJECT_SCAFFOLDS_DIR), id, "project");
-  if (project) return project;
-  const user = await readScaffoldFile(USER_SCAFFOLDS_DIR, id, "user");
-  if (user) return user;
-  const bundled = await readScaffoldFile(BUNDLED_SCAFFOLDS_DIR, id, "bundled");
-  if (bundled) return bundled;
-  return id === "default" ? FALLBACK_DEFAULT_SCAFFOLD : await loadScaffold(cwd, "default");
-}
-
-async function listScaffolds(cwd: string): Promise<GoalScaffold[]> {
-  const byId = new Map<string, GoalScaffold>();
-  for (const [base, source] of [[BUNDLED_SCAFFOLDS_DIR, "bundled"], [USER_SCAFFOLDS_DIR, "user"], [join(cwd, PROJECT_SCAFFOLDS_DIR), "project"]] as const) {
-    for (const scaffold of await listScaffoldsFromDir(base, source)) {
-      byId.set(scaffold.id, scaffold);
-    }
-  }
-  if (!byId.has("default")) byId.set("default", FALLBACK_DEFAULT_SCAFFOLD);
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+function listScaffolds(cwd: string): Promise<GoalScaffold[]> {
+  return listScaffoldsFromDirectories(scaffoldDirectories(cwd));
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
