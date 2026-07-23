@@ -142,6 +142,7 @@ const gitPretty = (value: string): boolean => /^(?:oneline|short|medium|full|ful
 // Custom formats deliberately exclude %(atoms), %xNN escapes, colors, and width directives.
 const gitFormat = (value: string): boolean => value.length > 0 && value.length <= 256
   && /^(?:[^%\r\n\0]|%(?:%|n|H|h|T|t|P|p|an|ae|aI|ad|ar|cn|ce|cI|cd|cr|s|f|b|B|d|D|N))*$/.test(value);
+const gitPrettyValue = (value: string): boolean => gitPretty(value) || value.startsWith("format:") && gitFormat(value.slice(7));
 
 // Keep revision and pathspec interpretation deliberately narrow. In particular, reject
 // reflogs, peel/exclusion operators, object:path, globs, and Git's :(magic) pathspecs.
@@ -160,7 +161,7 @@ function gitInspectAllowed(args: readonly string[], sub: string): boolean {
   };
   const flags = new Set([...common, ...perCommand[sub]]);
   const values = new Map<string, (value: string) => boolean>([
-    ["--date", gitDate], ["--pretty", (v) => gitPretty(v) || gitFormat(v.startsWith("format:") ? v.slice(7) : "")],
+    ["--date", gitDate], ["--pretty", gitPrettyValue],
     ["--format", gitFormat], ["--max-count", (v) => boundedInteger(v, 10_000, true)], ["--skip", (v) => boundedInteger(v, 10_000, true)],
     ["--since", (v) => v.length > 0 && v.length <= 128], ["--until", (v) => v.length > 0 && v.length <= 128],
     ["--author", (v) => v.length > 0 && v.length <= 128], ["--committer", (v) => v.length > 0 && v.length <= 128], ["--grep", (v) => v.length > 0 && v.length <= 128],
@@ -261,6 +262,22 @@ export function isConfiguredAllowed(executable: string, args: readonly string[],
   return rules.some((rule) => rule.executable === executable && Array.isArray(rule.args) && rule.args.length === args.length && rule.args.every((arg, i) => arg === args[i]));
 }
 
+function hasInvalidGitFormat(args: readonly string[]): boolean {
+  const command = splitGitArgs(args)?.command;
+  if (!command) return false;
+  for (let i = 1; i < command.length; i++) {
+    const arg = command[i];
+    if (arg === "--format" || arg === "--pretty") {
+      const value = command[++i];
+      if (!value || value.startsWith("-") || !(arg === "--format" ? gitFormat(value) : gitPrettyValue(value))) return true;
+      continue;
+    }
+    const match = arg.match(/^--(format|pretty)=(.*)$/);
+    if (match && !(match[1] === "format" ? gitFormat(match[2]) : gitPrettyValue(match[2]))) return true;
+  }
+  return false;
+}
+
 function denialHint(executable: string, args: readonly string[]): string {
   if (args.length > MAX_ARGS) return `too many arguments; max ${MAX_ARGS}`;
   if (!args.every(safeToken)) return "arguments must be single-line tokens up to 4096 characters";
@@ -271,8 +288,7 @@ function denialHint(executable: string, args: readonly string[]): string {
     const sub = parsed?.command[0];
     if (!sub || !["status", "branch", "remote", "rev-parse", "log", "show", "diff"].includes(sub))
       return "unsupported subcommand; use status, branch, remote, rev-parse, log, show, or diff";
-    if (args.some((arg) => /^--(?:pretty|format)(?:=|$)/.test(arg)) || args.some((arg) => arg === "--pretty" || arg === "--format"))
-      return "unsupported format; use safe fields, %n, and literal separators";
+    if (hasInvalidGitFormat(args)) return "unsupported format; use safe fields, %n, and literal separators";
     return "arguments outside the safe inspection grammar";
   }
   if (executable === "rg") return "unsupported option or value; use basic search and output options";

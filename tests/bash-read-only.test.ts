@@ -26,6 +26,10 @@ test("policy denials give concise actionable diagnostics", async () => {
   const options = { allowGlobalAdditions: false };
   await assert.rejects(() => executeReadOnly("git", ["show", "--format=%x09%H"], undefined, process.cwd(), 1000, undefined, options),
     /Denied git: unsupported format; use safe fields, %n, and literal separators/);
+  await assert.rejects(() => executeReadOnly("git", ["show", "--format=%H", "--output=/tmp/result"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied git: arguments outside the safe inspection grammar/);
+  await assert.rejects(() => executeReadOnly("git", ["show", "--format"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied git: unsupported format; use safe fields, %n, and literal separators/);
   await assert.rejects(() => executeReadOnly("tail", ["app.log"], undefined, process.cwd(), 1000, undefined, options),
     /Denied tail: require -n with 1\.\.10000 lines and a file/);
   await assert.rejects(() => executeReadOnly("journalctl", ["-n", "20"], undefined, process.cwd(), 1000, undefined, options),
