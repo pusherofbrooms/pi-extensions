@@ -260,6 +260,27 @@ export function isBuiltInAllowed(executable: string, args: readonly string[]): b
 export function isConfiguredAllowed(executable: string, args: readonly string[], rules: readonly ReadOnlyRule[]): boolean {
   return rules.some((rule) => rule.executable === executable && Array.isArray(rule.args) && rule.args.length === args.length && rule.args.every((arg, i) => arg === args[i]));
 }
+
+function denialHint(executable: string, args: readonly string[]): string {
+  if (args.length > MAX_ARGS) return `too many arguments; max ${MAX_ARGS}`;
+  if (!args.every(safeToken)) return "arguments must be single-line tokens up to 4096 characters";
+  if (executable === "tail") return `require -n with 1..${MAX_TAIL_LINES} lines and a file`;
+  if (executable === "journalctl") return `require --no-pager and -n 0..${MAX_JOURNAL_LINES}`;
+  if (executable === "git") {
+    const parsed = splitGitArgs(args);
+    const sub = parsed?.command[0];
+    if (!sub || !["status", "branch", "remote", "rev-parse", "log", "show", "diff"].includes(sub))
+      return "unsupported subcommand; use status, branch, remote, rev-parse, log, show, or diff";
+    if (args.some((arg) => /^--(?:pretty|format)(?:=|$)/.test(arg)) || args.some((arg) => arg === "--pretty" || arg === "--format"))
+      return "unsupported format; use safe fields, %n, and literal separators";
+    return "arguments outside the safe inspection grammar";
+  }
+  if (executable === "rg") return "unsupported option or value; use basic search and output options";
+  if (executable === "find") return "unsupported expression; use read-only tests and print actions";
+  if (["ps", "vmstat", "uptime", "uname", "df", "free", "who", "id", "date"].includes(executable))
+    return "unsupported option or value";
+  return "executable not allowlisted";
+}
 async function loadRules(): Promise<ReadOnlyRule[]> {
   try {
     const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf8")) as Config;
@@ -300,7 +321,7 @@ export async function executeReadOnly(executable: string, args: string[], reques
   if (!Number.isFinite(timeoutMs) || !Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) throw new Error("timeoutMs must be a finite integer from 100 through 30000");
   if (signal?.aborted) throw new Error("Command aborted before start");
   const rules = options.allowGlobalAdditions === false ? [] : await loadRules();
-  if (!isBuiltInAllowed(executable, args) && !isConfiguredAllowed(executable, args, rules)) throw new Error(`Denied read-only command: ${executable}`);
+  if (!isBuiltInAllowed(executable, args) && !isConfiguredAllowed(executable, args, rules)) throw new Error(`Denied ${executable}: ${denialHint(executable, args)}`);
   const root = await realpath(sessionCwd), cwd = await realpath(requestedCwd ? (isAbsolute(requestedCwd) ? requestedCwd : join(root, requestedCwd)) : root);
   const tail = executable === "tail" ? await prepareTailFiles(cwd, args) : undefined;
   const commandArgs = executable === "git" ? buildGitArgs(args) : tail?.args ?? args;

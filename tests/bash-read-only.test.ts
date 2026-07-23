@@ -22,6 +22,18 @@ test("trusted additions require an exact structured argument vector", () => {
   assert.equal(isConfiguredAllowed("custom-inspect", ["--summary", "; id"], rules), false);
 });
 
+test("policy denials give concise actionable diagnostics", async () => {
+  const options = { allowGlobalAdditions: false };
+  await assert.rejects(() => executeReadOnly("git", ["show", "--format=%x09%H"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied git: unsupported format; use safe fields, %n, and literal separators/);
+  await assert.rejects(() => executeReadOnly("tail", ["app.log"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied tail: require -n with 1\.\.10000 lines and a file/);
+  await assert.rejects(() => executeReadOnly("journalctl", ["-n", "20"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied journalctl: require --no-pager and -n 0\.\.1000/);
+  await assert.rejects(() => executeReadOnly("sh", ["-c", "id"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied sh: executable not allowlisted/);
+});
+
 test("execution uses literal args and permits readable paths and cwd outside the session", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "bash-ro-"));
   const external = await mkdtemp(join(tmpdir(), "bash-ro-external-"));
