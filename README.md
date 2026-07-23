@@ -95,8 +95,6 @@ Entries are either exact hostnames or `*.` subdomain patterns. `*.wikipedia.org`
 
 HTML pages are parsed with Defuddle and LinkeDOM without executing JavaScript. Defuddle's optional third-party fallback services are disabled. Interactive and client-rendered pages should use `agent-browser` instead.
 
-As a temporary workaround for a Defuddle 0.19.1 regression introduced by commit `43cc4cb`, content-pattern removal is disabled for Wikipedia domains so later article sections are retained.
-
 Output is truncated to Pi defaults (about 50KB / 2000 lines), with full Markdown saved to a temp file when truncation occurs.
 
 ## 4) `subagents`

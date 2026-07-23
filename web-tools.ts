@@ -387,20 +387,12 @@ export type ExtractedPage = {
   markdown: string;
 };
 
-export function defuddleOptionsForUrl(url: string) {
-  const hostname = new URL(url).hostname.toLowerCase();
-  const isWikipedia = hostname === "wikipedia.org" || hostname.endsWith(".wikipedia.org");
-  return {
-    markdown: true as const,
-    useAsync: false,
-    // Work around Defuddle 0.19.1 dropping later Wikipedia sections after 43cc4cb.
-    ...(isWikipedia ? { removeContentPatterns: false } : {}),
-  };
-}
-
 export async function extractWithDefuddle(html: string, url: string): Promise<ExtractedPage> {
   const { document } = parseHTML(html);
-  const result = await Defuddle(document, url, defuddleOptionsForUrl(url));
+  const result = await Defuddle(document, url, {
+    markdown: true,
+    useAsync: false,
+  });
   const markdown = result.content?.trim();
   if (!markdown) {
     throw new Error("Defuddle found no readable content. Use agent-browser for this page.");

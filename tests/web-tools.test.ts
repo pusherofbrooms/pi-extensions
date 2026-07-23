@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_FETCH_RESPONSE_BYTES,
-  defuddleOptionsForUrl,
   extractWithDefuddle,
   fetchPage,
   isHostnameAllowed,
@@ -21,10 +20,20 @@ test("Defuddle returns structured Markdown and removes obvious chrome", async ()
   assert.doesNotMatch(result.markdown, /Pricing|Copyright|Related promotions/);
 });
 
-test("Wikipedia workaround disables Defuddle content-pattern removal", () => {
-  assert.equal(defuddleOptionsForUrl("https://en.wikipedia.org/wiki/Example").removeContentPatterns, false);
-  assert.equal(defuddleOptionsForUrl("https://wikipedia.org/wiki/Example").removeContentPatterns, false);
-  assert.equal("removeContentPatterns" in defuddleOptionsForUrl("https://example.com/article"), false);
+test("Defuddle retains sections after a Wikipedia-style mid-article image row", async () => {
+  const html = `<!doctype html><html><head><title>Example topic</title></head><body><main><article>
+    <section><h2>Background</h2><p>Early accounts were largely anecdotal, drawing on field notes from researchers working in several countries without a shared vocabulary for their observations.</p></section>
+    <section><h2>Methods</h2><div class="tmulti"><div class="trow">
+      <div class="tsingle"><a href="/wiki/File:One"><img src="one.jpg" alt="First apparatus"></a><a href="/wiki/One">First apparatus</a></div>
+      <div class="tsingle"><a href="/wiki/File:Two"><img src="two.jpg" alt="Second apparatus"></a><a href="/wiki/Two">Second apparatus</a></div>
+    </div></div><p>Contemporary studies use a standard protocol. Samples are collected on a fixed schedule and cross-checked by a second team before analysis begins.</p></section>
+    <section><h2>Later findings</h2><p>The consolidated dataset shows a consistent seasonal pattern across every site. This later section must remain in the extracted article.</p></section>
+  </article></main></body></html>`;
+
+  const result = await extractWithDefuddle(html, "https://en.wikipedia.org/wiki/Example_topic");
+  assert.match(result.markdown, /## Methods/);
+  assert.match(result.markdown, /## Later findings/);
+  assert.match(result.markdown, /This later section must remain/);
 });
 
 test("fetch host allowlist defaults to all public hostnames", () => {
