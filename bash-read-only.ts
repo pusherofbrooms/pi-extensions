@@ -136,6 +136,56 @@ export function buildGitArgs(args: readonly string[]): string[] {
   return ["--no-pager", "-c", "core.fsmonitor=false", ...parsed.globals, sub, ...disableContentDrivers, ...rest];
 }
 
+const gitDate = (value: string): boolean => value.length <= 160 && (/^(?:relative|local|default|iso|iso-strict|rfc|short|raw|unix|human)$/.test(value)
+  || /^format(?:-local)?:[^\r\n\0%]{0,128}(?:%(?:%|Y|y|m|d|H|M|S|z|Z|F|T|s)[^\r\n\0%]{0,128})*$/.test(value));
+const gitPretty = (value: string): boolean => /^(?:oneline|short|medium|full|fuller|reference|email|raw)$/.test(value);
+// Custom formats deliberately exclude %(atoms), %xNN escapes, colors, and width directives.
+const gitFormat = (value: string): boolean => value.length > 0 && value.length <= 256
+  && /^(?:[^%\r\n\0]|%(?:%|n|H|h|T|t|P|p|an|ae|aI|ad|ar|cn|ce|cI|cd|cr|s|f|b|B|d|D|N))*$/.test(value);
+
+// Keep revision and pathspec interpretation deliberately narrow. In particular, reject
+// reflogs, peel/exclusion operators, object:path, globs, and Git's :(magic) pathspecs.
+const gitRevisionAtom = String.raw`[A-Za-z0-9][A-Za-z0-9._/-]*(?:~[0-9]{1,6}|\^[0-9]{0,6}|\^\{(?:commit|tree|tag|object)\})?`;
+const gitRevision = new RegExp(`^(?:${gitRevisionAtom})(?:\\.\\.\\.?${gitRevisionAtom})?$`);
+function gitPathOperand(value: string): boolean {
+  return safeToken(value) && value.length > 0 && !/^(?::|!|\^)/.test(value) && !/[?*\[\\]/.test(value);
+}
+
+function gitInspectAllowed(args: readonly string[], sub: string): boolean {
+  const common = ["--stat", "--shortstat", "--name-only", "--name-status", "--summary", "--no-color", "--patch", "-p"];
+  const perCommand: Record<string, string[]> = {
+    log: ["--oneline", "--reverse", "--all", "--branches", "--tags"],
+    show: ["--oneline"],
+    diff: ["--reverse", "--cached", "--staged", "--check", "--compact-summary", "--binary", "--full-index", "--no-renames"],
+  };
+  const flags = new Set([...common, ...perCommand[sub]]);
+  const values = new Map<string, (value: string) => boolean>([
+    ["--date", gitDate], ["--pretty", (v) => gitPretty(v) || gitFormat(v.startsWith("format:") ? v.slice(7) : "")],
+    ["--format", gitFormat], ["--max-count", (v) => boundedInteger(v, 10_000, true)], ["--skip", (v) => boundedInteger(v, 10_000, true)],
+    ["--since", (v) => v.length > 0 && v.length <= 128], ["--until", (v) => v.length > 0 && v.length <= 128],
+    ["--author", (v) => v.length > 0 && v.length <= 128], ["--committer", (v) => v.length > 0 && v.length <= 128], ["--grep", (v) => v.length > 0 && v.length <= 128],
+  ]);
+  let after = false, revisions = 0;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!after && arg === "--") { after = true; continue; }
+    if (!after && (/^-n?\d{1,4}$/.test(arg) || /^-U\d{1,3}$/.test(arg) || /^--unified=\d{1,3}$/.test(arg) || /^--decorate(?:=(?:short|full|auto|no))?$/.test(arg))) continue;
+    if (!after && flags.has(arg)) continue;
+    if (!after && arg.startsWith("--") && arg.includes("=")) {
+      const at = arg.indexOf("="), validate = values.get(arg.slice(0, at));
+      if (validate?.(arg.slice(at + 1))) continue;
+      return false;
+    }
+    if (!after && values.has(arg)) { if (++i < args.length && values.get(arg)!(args[i])) continue; return false; }
+    if (!after && arg.startsWith("-")) return false;
+    if (after) { if (!gitPathOperand(arg)) return false; continue; }
+    if (!gitRevision.test(arg)) return false;
+    revisions++;
+    if (sub === "diff" && revisions > 2) return false;
+  }
+  return true;
+}
+
 function gitAllowed(args: readonly string[]): boolean {
   const parsed = splitGitArgs(args);
   if (!parsed || !parsed.command.length) return false;
@@ -143,9 +193,7 @@ function gitAllowed(args: readonly string[]): boolean {
   if (sub === "status") return all(rest, /^(--short|-s|--branch|-b|--porcelain(?:=v[12])?|--untracked-files=(?:no|normal|all)|--ignored(?:=(?:traditional|matching|no))?)$/);
   if (sub === "branch") return all(rest, /^(--list|-l|--all|-a|--remotes|-r|--verbose|-v|-vv|--no-color)$/);
   if (sub === "rev-parse") return rest.length > 0 && all(rest, /^(--show-toplevel|--show-prefix|--is-inside-work-tree|--is-bare-repository|--git-dir|--abbrev-ref|--verify|HEAD|[A-Za-z0-9._\/-]+(?:\^\{(?:commit|tree|tag|object)\})?)$/);
-  if (!["log", "show", "diff"].includes(sub)) return false;
-  const option = /^(--oneline|--stat|--shortstat|--name-only|--name-status|--summary|--no-color|--decorate(?:=short|=full|=auto|=no)?|--reverse|--patch|-p|-U\d{1,3}|--unified=\d{1,3}|-[n]?\d{1,4}|--max-count=\d{1,4}|--since=.{1,128}|--until=.{1,128}|--)$/;
-  return all(rest, /^(--oneline|--stat|--shortstat|--name-only|--name-status|--summary|--no-color|--decorate(?:=short|=full|=auto|=no)?|--reverse|--patch|-p|-U\d{1,3}|--unified=\d{1,3}|-[n]?\d{1,4}|--max-count=\d{1,4}|--since=.{1,128}|--until=.{1,128}|--|HEAD|[A-Za-z0-9._\/-]+(?:\.{2,3}[A-Za-z0-9._\/-]+)?|:\/?[A-Za-z0-9._\/-]+)$/) && rest.every((arg) => !arg.startsWith("-") || option.test(arg));
+  return ["log", "show", "diff"].includes(sub) && gitInspectAllowed(rest, sub);
 }
 
 function findAllowed(args: readonly string[]): boolean {

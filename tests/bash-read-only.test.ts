@@ -55,6 +55,35 @@ test("policies require finite bounds and reject write or execution switches", ()
   assert.deepEqual(buildGitArgs(["-C", "../repo", "show", "HEAD"]), ["--no-pager", "-c", "core.fsmonitor=false", "-C", "../repo", "show", "--no-ext-diff", "--no-textconv", "HEAD"]);
 });
 
+test("git inspection policy allows safe output and selection options", () => {
+  const allowed = [
+    ["log", "--date=iso-strict", "--pretty=fuller", "--max-count", "20", "--author=Alice", "--grep", "fix", "--all"],
+    ["log", "--date", "format:%Y-%m-%d %H:%M", "--format", "%h %aI %an %s%d", "--since", "2 weeks ago", "main..topic"],
+    ["show", "--pretty=format:%H%n%an%n%s", "--name-status", "HEAD"],
+    ["diff", "--cached", "--stat", "--unified=20", "--", "src/file with spaces.ts"],
+    ["diff", "--staged", "--check", "--no-renames", "HEAD~1", "HEAD"],
+    ["log", "main..topic"], ["show", "HEAD^{commit}"],
+    ["diff", "HEAD", "--", "src/-literal file.ts"],
+  ];
+  for (const args of allowed) assert.equal(isBuiltInAllowed("git", args), true, args.join(" "));
+});
+
+test("git inspection policy rejects execution, injection, writes, and unbounded formatting", () => {
+  const denied = [
+    ["log", "--exec=touch /tmp/pwn"], ["log", "-c", "core.pager=sh", "HEAD"], ["--config-env=x=y", "log"],
+    ["diff", "--ext-diff"], ["diff", "--textconv"], ["diff", "--output=/tmp/diff"], ["diff", "--ita-invisible-in-index"],
+    ["show", "--pretty=format:%(trailers)"], ["show", "--format=%x1b[31m%H"], ["show", "--format=%C(red)%H"],
+    ["show", "--pretty=tformat:%H"], ["show", "--pretty=custom"], ["show", "--format"],
+    ["log", "--date=not-a-date-mode"], ["log", "--date=format:%Y%n"], ["log", "--date"],
+    ["log", "--max-count=10001"], ["log", "--skip=-1"], ["log", "--author="], ["log", "--unknown", "HEAD"],
+    ["log", "--", "safe\nunsafe"], ["log", "HEAD@{1}"], ["show", "HEAD:path"], ["show", "HEAD^!"],
+    ["diff", "HEAD", "main", "third"], ["diff", "--", ":(top)file"], ["diff", "--", "*.ts"],
+    ["diff", "--", "[ab].txt"], ["diff", "--", "!excluded"],
+    ["archive", "HEAD"], ["checkout", "main"], ["tag", "new-tag"],
+  ];
+  for (const args of denied) assert.equal(isBuiltInAllowed("git", args), false, args.join(" "));
+});
+
 test("find policy accepts a positive inspection grammar", () => {
   const allowed = [
     ["."] ,
