@@ -152,7 +152,7 @@ function gitPathOperand(value: string): boolean {
 }
 
 function gitInspectAllowed(args: readonly string[], sub: string): boolean {
-  const common = ["--stat", "--shortstat", "--name-only", "--name-status", "--summary", "--no-color", "--patch", "-p"];
+  const common = ["--stat", "--shortstat", "--name-only", "--name-status", "--summary", "--no-color", "--patch", "-p", "--no-ext-diff", "--no-textconv"];
   const perCommand: Record<string, string[]> = {
     log: ["--oneline", "--reverse", "--all", "--branches", "--tags"],
     show: ["--oneline"],
@@ -191,7 +191,9 @@ function gitAllowed(args: readonly string[]): boolean {
   if (!parsed || !parsed.command.length) return false;
   const [sub, ...rest] = parsed.command;
   if (sub === "status") return all(rest, /^(--short|-s|--branch|-b|--porcelain(?:=v[12])?|--untracked-files=(?:no|normal|all)|--ignored(?:=(?:traditional|matching|no))?)$/);
-  if (sub === "branch") return all(rest, /^(--list|-l|--all|-a|--remotes|-r|--verbose|-v|-vv|--no-color)$/);
+  if (sub === "branch") return (rest.length === 1 && rest[0] === "--show-current")
+    || all(rest, /^(--list|-l|--all|-a|--remotes|-r|--verbose|-v|-vv|--no-color)$/);
+  if (sub === "remote") return rest.length === 1 && ["-v", "--verbose"].includes(rest[0]);
   if (sub === "rev-parse") return rest.length > 0 && all(rest, /^(--show-toplevel|--show-prefix|--is-inside-work-tree|--is-bare-repository|--git-dir|--abbrev-ref|--verify|HEAD|[A-Za-z0-9._\/-]+(?:\^\{(?:commit|tree|tag|object)\})?)$/);
   return ["log", "show", "diff"].includes(sub) && gitInspectAllowed(rest, sub);
 }

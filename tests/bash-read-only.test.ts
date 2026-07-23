@@ -47,6 +47,15 @@ test("policies require finite bounds and reject write or execution switches", ()
   assert.equal(isBuiltInAllowed("git", ["status", "--short"]), true);
   assert.equal(isBuiltInAllowed("git", ["branch", "new-branch"]), false);
   assert.equal(isBuiltInAllowed("git", ["branch", "--list"]), true);
+  assert.equal(isBuiltInAllowed("git", ["branch", "--show-current"]), true);
+  assert.equal(isBuiltInAllowed("git", ["branch", "--show-current", "extra"]), false);
+  assert.equal(isBuiltInAllowed("git", ["branch", "--show-current", "--verbose"]), false);
+  assert.equal(isBuiltInAllowed("git", ["remote", "-v"]), true);
+  assert.equal(isBuiltInAllowed("git", ["remote", "--verbose"]), true);
+  assert.equal(isBuiltInAllowed("git", ["remote"]), false);
+  assert.equal(isBuiltInAllowed("git", ["remote", "-v", "extra"]), false);
+  assert.equal(isBuiltInAllowed("git", ["remote", "get-url", "origin"]), false);
+  assert.equal(isBuiltInAllowed("git", ["remote", "add", "origin", "https://example.com/repo.git"]), false);
   assert.equal(isBuiltInAllowed("ps", ["e"]), false);
   assert.deepEqual(buildGitArgs(["show", "HEAD"]), ["--no-pager", "-c", "core.fsmonitor=false", "show", "--no-ext-diff", "--no-textconv", "HEAD"]);
   assert.equal(isBuiltInAllowed("git", ["-C", "/tmp/repo", "--no-pager", "status", "--short"]), true);
@@ -60,6 +69,7 @@ test("git inspection policy allows safe output and selection options", () => {
     ["log", "--date=iso-strict", "--pretty=fuller", "--max-count", "20", "--author=Alice", "--grep", "fix", "--all"],
     ["log", "--date", "format:%Y-%m-%d %H:%M", "--format", "%h %aI %an %s%d", "--since", "2 weeks ago", "main..topic"],
     ["show", "--pretty=format:%H%n%an%n%s", "--name-status", "HEAD"],
+    ["show", "--format=fuller", "--no-ext-diff", "--no-textconv", "HEAD"],
     ["diff", "--cached", "--stat", "--unified=20", "--", "src/file with spaces.ts"],
     ["diff", "--staged", "--check", "--no-renames", "HEAD~1", "HEAD"],
     ["log", "main..topic"], ["show", "HEAD^{commit}"],
