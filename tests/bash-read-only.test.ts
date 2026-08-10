@@ -97,6 +97,7 @@ test("git inspection policy allows safe output and selection options", () => {
 test("new inspection utilities allow useful reads and deny external/program-loading modes", () => {
   const allowed: Array<[string, string[]]> = [
     ["ls", ["-lah", "--", "."]], ["stat", ["--printf=%s\\n", "file"]],
+    ["which", ["git"]], ["which", ["-a", "node", "rg"]], ["which", ["-s", "--", "-tool"]],
     ["file", ["--brief", "file"]], ["head", ["-n", "20", "file"]], ["wc", ["-l", "file"]],
     ["du", ["-sh", "."]], ["readlink", ["-f", "link"]], ["realpath", ["--relative-to=.", "file"]],
     ["jq", ["-r", ".name // empty", "data.json"]], ["jq", ["-n", "--arg", "x", "value", "$x"]],
@@ -104,6 +105,8 @@ test("new inspection utilities allow useful reads and deny external/program-load
   for (const [executable, args] of allowed) assert.equal(isBuiltInAllowed(executable, args), true, `${executable} ${args.join(" ")}`);
 
   const denied: Array<[string, string[]]> = [
+    ["which", []], ["which", ["-a"]], ["which", ["--read-alias", "git"]],
+    ["which", ["--read-functions", "git"]], ["which", ["/bin/sh"]], ["which", ["git\nsh"]],
     ["file", ["-m", "custom.magic", "file"]], ["file", ["-mcustom.magic", "file"]],
     ["file", ["--magic-file=custom.magic", "file"]], ["file", ["-Mcustom.magic", "file"]],
     ["file", ["-S", "file"]], ["file", ["--no-sandbox", "file"]], ["file", ["-z", "archive.gz"]],

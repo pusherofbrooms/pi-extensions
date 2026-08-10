@@ -346,6 +346,18 @@ function jqAllowed(args: readonly string[]): boolean {
   return Boolean(filter) && !hasJqModuleLoading(filter);
 }
 
+function whichAllowed(args: readonly string[]): boolean {
+  let afterOptions = false, commands = 0;
+  for (const arg of args) {
+    if (!afterOptions && arg === "--") { afterOptions = true; continue; }
+    if (!afterOptions && /^-[as]{1,2}$/.test(arg) && !/(.).*\1/.test(arg.slice(1))) continue;
+    if (!afterOptions && arg.startsWith("-")) return false;
+    if (!/^-?[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(arg)) return false;
+    commands++;
+  }
+  return commands > 0;
+}
+
 function readOnlyUtilityAllowed(executable: string, args: readonly string[]): boolean {
   if (executable === "file") return fileAllowed(args);
   if (executable === "jq") return jqAllowed(args);
@@ -365,6 +377,7 @@ export function isBuiltInAllowed(executable: string, args: readonly string[]): b
     case "id": return all(args, /^(?:-[ugGnrz]+|--(?:user|group|groups|name|real|zero)|[A-Za-z0-9._-]+)$/) && args.filter((a) => !a.startsWith("-")).length <= 1;
     case "date": return all(args, /^(?:-u|--utc|--universal|--iso-8601(?:=(?:date|hours|minutes|seconds|ns))?|--rfc-3339=(?:date|seconds|ns)|--rfc-email|\+[^\r\n]{1,256})$/);
     case "tail": return tailAllowed(args);
+    case "which": return whichAllowed(args);
     case "ls": case "stat": case "head": case "wc": case "du": case "readlink": case "realpath": case "file": case "jq":
       return readOnlyUtilityAllowed(executable, args);
     case "journalctl": return journalAllowed(args);
@@ -410,7 +423,7 @@ function denialHint(executable: string, args: readonly string[]): string {
   }
   if (executable === "rg") return "unsupported option or value; use basic search and output options";
   if (executable === "find") return "unsupported expression; use read-only tests and print actions";
-  if (["ps", "vmstat", "uptime", "uname", "df", "free", "who", "id", "date", "ls", "stat", "file", "head", "wc", "du", "readlink", "realpath", "jq"].includes(executable))
+  if (["ps", "vmstat", "uptime", "uname", "df", "free", "who", "id", "date", "which", "ls", "stat", "file", "head", "wc", "du", "readlink", "realpath", "jq"].includes(executable))
     return "unsupported option or value";
   return "executable not allowlisted";
 }
@@ -483,7 +496,7 @@ export async function executeReadOnly(executable: string, args: string[], reques
 
 export function createBashReadOnlyExtension(options: BashReadOnlyOptions = {}) {
   return function bashReadOnlyExtension(pi: ExtensionAPI) {
-    pi.registerTool({ name: "bash_read_only", label: "Bash (read only)", description: "Run a mostly-safe, deny-by-default inspection command as a structured executable and argument array. Primarily non-mutating, but inspection can have incidental side effects; this is not a sandbox. Explicit readable paths outside cwd are allowed. No shell, pipes, redirects, or executable paths.", promptSnippet: "Run curated, deny-by-default inspection commands as structured argv. Built-ins include filesystem/text inspection (ls, stat, file, head, tail, wc, du, readlink, realpath, find, rg, jq), system inspection, journalctl, and read-only Git subcommands; write, plugin, and external-command modes are denied.", parameters: Type.Object({ executable: Type.String(), args: Type.Array(Type.String(), { maxItems: MAX_ARGS }), cwd: Type.Optional(Type.String()), timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 30000 })) }), async execute(_id, params, signal, _update, ctx) { const result = await executeReadOnly(params.executable, params.args, params.cwd, ctx.cwd, params.timeoutMs, signal, options); const reason = result.reason ? `; ${result.reason}` : ""; return { content: [{ type: "text", text: `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}${result.truncated ? "\n[output truncated]" : ""}\n[exit ${result.code ?? "signal"}${reason}]` }], details: result }; } });
+    pi.registerTool({ name: "bash_read_only", label: "Bash (read only)", description: "Run a mostly-safe, deny-by-default inspection command as a structured executable and argument array. Primarily non-mutating, but inspection can have incidental side effects; this is not a sandbox. Explicit readable paths outside cwd are allowed. No shell, pipes, redirects, or executable paths.", promptSnippet: "Run curated, deny-by-default inspection commands as structured argv. Built-ins include filesystem/text inspection (which, ls, stat, file, head, tail, wc, du, readlink, realpath, find, rg, jq), system inspection, journalctl, and read-only Git subcommands; write, plugin, and external-command modes are denied.", parameters: Type.Object({ executable: Type.String(), args: Type.Array(Type.String(), { maxItems: MAX_ARGS }), cwd: Type.Optional(Type.String()), timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 30000 })) }), async execute(_id, params, signal, _update, ctx) { const result = await executeReadOnly(params.executable, params.args, params.cwd, ctx.cwd, params.timeoutMs, signal, options); const reason = result.reason ? `; ${result.reason}` : ""; return { content: [{ type: "text", text: `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}${result.truncated ? "\n[output truncated]" : ""}\n[exit ${result.code ?? "signal"}${reason}]` }], details: result }; } });
   };
 }
 export default createBashReadOnlyExtension();
