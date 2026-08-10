@@ -3,7 +3,31 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../openai-codex-image-gen.ts";
+import { getOpenAICodexToken, loadConfig } from "../openai-codex-image-gen.ts";
+
+test("image generation resolves the Codex token through provider auth", async () => {
+	let requestedProvider: string | undefined;
+	const token = await getOpenAICodexToken({
+		modelRegistry: {
+			async getProviderAuth(provider) {
+				requestedProvider = provider;
+				return { auth: { apiKey: "test-token" } };
+			},
+		},
+	});
+
+	assert.equal(requestedProvider, "openai-codex");
+	assert.equal(token, "test-token");
+});
+
+test("image generation reports missing provider auth", async () => {
+	await assert.rejects(
+		getOpenAICodexToken({
+			modelRegistry: { async getProviderAuth() { return undefined; } },
+		}),
+		/Missing OpenAI Codex OAuth credentials/,
+	);
+});
 
 test("image generation ignores project config unless the project is trusted", async (t) => {
 	const project = await mkdtemp(join(tmpdir(), "pi-image-config-trust-"));

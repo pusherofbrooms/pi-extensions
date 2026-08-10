@@ -312,10 +312,13 @@ async function saveImage(base64Data: string, outputDir: string): Promise<string>
 	return filePath;
 }
 
-async function getOpenAICodexToken(ctx: {
-	modelRegistry: { getApiKeyForProvider: (provider: string) => Promise<string | undefined> };
+export async function getOpenAICodexToken(ctx: {
+	modelRegistry: {
+		getProviderAuth: (provider: string) => Promise<{ auth: { apiKey?: string } } | undefined>;
+	};
 }): Promise<string> {
-	const token = await ctx.modelRegistry.getApiKeyForProvider(PROVIDER);
+	const result = await ctx.modelRegistry.getProviderAuth(PROVIDER);
+	const token = result?.auth.apiKey;
 	if (!token) {
 		throw new Error("Missing OpenAI Codex OAuth credentials. Run /login for openai-codex.");
 	}
