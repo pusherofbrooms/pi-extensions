@@ -94,6 +94,69 @@ test("git inspection policy allows safe output and selection options", () => {
   for (const args of allowed) assert.equal(isBuiltInAllowed("git", args), true, args.join(" "));
 });
 
+test("new inspection utilities allow useful reads and deny external/program-loading modes", () => {
+  const allowed: Array<[string, string[]]> = [
+    ["ls", ["-lah", "--", "."]], ["stat", ["--printf=%s\\n", "file"]],
+    ["file", ["--brief", "file"]], ["head", ["-n", "20", "file"]], ["wc", ["-l", "file"]],
+    ["du", ["-sh", "."]], ["readlink", ["-f", "link"]], ["realpath", ["--relative-to=.", "file"]],
+    ["jq", ["-r", ".name // empty", "data.json"]], ["jq", ["-n", "--arg", "x", "value", "$x"]],
+  ];
+  for (const [executable, args] of allowed) assert.equal(isBuiltInAllowed(executable, args), true, `${executable} ${args.join(" ")}`);
+
+  const denied: Array<[string, string[]]> = [
+    ["file", ["-m", "custom.magic", "file"]], ["file", ["-mcustom.magic", "file"]],
+    ["file", ["--magic-file=custom.magic", "file"]], ["file", ["-Mcustom.magic", "file"]],
+    ["file", ["-S", "file"]], ["file", ["--no-sandbox", "file"]], ["file", ["-z", "archive.gz"]],
+    ["jq", ["-L", "modules", "import \"x\" as x; x"]], ["jq", ["-Lmodules", "import \"x\" as x; x"]],
+    ["jq", ["--library-path=modules", "import \"x\" as x; x"]], ["jq", ["-f", "filter.jq", "data.json"]],
+    ["jq", ["--slurpfile", "x", "other.json", "."]], ["jq", ["include \"helpers\"; helpers", "data.json"]],
+  ];
+  for (const [executable, args] of denied) assert.equal(isBuiltInAllowed(executable, args), false, `${executable} ${args.join(" ")}`);
+});
+
+test("jq denies module loading in varied placements but allows keywords in strings", () => {
+  const denied = [
+    "  import \"helpers\" as h; h::run",
+    "(include \"helpers\"; helpers)",
+    ". as $x |\ninclude \"helpers\"; helpers",
+    "[1] | (\n  import \"helpers\" as h; h::run\n)",
+  ];
+  for (const filter of denied) assert.equal(isBuiltInAllowed("jq", [filter]), false, filter);
+
+  const allowed = [
+    '"import \\"helpers\\" as h"',
+    '{message: "include helpers"}',
+    '"quoted: \\\"include helpers\\\""',
+    '["import", "include"]',
+  ];
+  for (const filter of allowed) assert.equal(isBuiltInAllowed("jq", [filter]), true, filter);
+});
+
+test("additional Git inspection subcommands deny writers and external helpers", () => {
+  const allowed = [
+    ["ls-files", "--cached", "--others", "--exclude-standard"], ["ls-files", "-co"],
+    ["ls-files", "--", "-co"],
+    ["grep", "-n", "-i", "needle", "--", "src"], ["grep", "-ni", "needle"],
+    ["grep", "-A3", "-e", "needle"], ["grep", "--regexp=needle"],
+    ["grep", "-fpatterns.txt"], ["grep", "--file", "patterns.txt"],
+    ["grep", "-e", "needle", "--", "-path"], ["grep", "--", "-pattern"],
+    ["blame", "--line-porcelain", "HEAD", "--", "src/file.ts"],
+    ["ls-tree", "-r", "--name-only", "HEAD"], ["ls-tree", "-rl", "HEAD"],
+    ["cat-file", "-p", "HEAD^{tree}"], ["cat-file", "--batch-all-objects", "--batch-check"],
+  ];
+  for (const args of allowed) assert.equal(isBuiltInAllowed("git", args), true, args.join(" "));
+  const denied = [
+    ["grep", "-O", "evil", "needle"], ["grep", "-Oevil", "needle"],
+    ["grep", "-nOevil", "needle"], ["grep", "-nz", "needle"], ["ls-files", "-cQ"], ["ls-tree", "-rx", "HEAD"],
+    ["grep", "-e"], ["grep", "--regexp="], ["grep", "-f"], ["grep", "--file="],
+    ["grep", "--open-files-in-pager=less", "needle"], ["grep", "--ext-grep", "needle"],
+    ["grep", "--textconv", "needle"], ["cat-file", "--filters", "HEAD:file"],
+    ["cat-file", "--filters=HEAD:file"], ["cat-file", "--textconv", "HEAD:file"],
+    ["blame", "--output", "result", "file"], ["blame", "--output=result", "file"],
+  ];
+  for (const args of denied) assert.equal(isBuiltInAllowed("git", args), false, args.join(" "));
+});
+
 test("git inspection policy rejects execution, injection, writes, and unbounded formatting", () => {
   const denied = [
     ["log", "--exec=touch /tmp/pwn"], ["log", "-c", "core.pager=sh", "HEAD"], ["--config-env=x=y", "log"],
@@ -170,6 +233,18 @@ test("external rg executes by command name from the parent PATH", async (t) => {
   await writeFile(join(root, "sample.txt"), "needle\n");
   const result = await executeReadOnly("rg", ["-n", "needle", "."], undefined, root, 10_000, undefined, { allowGlobalAdditions: false });
   assert.match(result.stdout, /1:needle/);
+});
+
+test("new filesystem utilities execute with literal operands", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bash-ro-basic-"));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  await writeFile(join(root, "sample.txt"), "one\ntwo\n");
+  const head = await executeReadOnly("head", ["-n", "1", "sample.txt"], undefined, root, 10_000, undefined, { allowGlobalAdditions: false });
+  assert.equal(head.stdout, "one\n");
+  const wc = await executeReadOnly("wc", ["-l", "sample.txt"], undefined, root, 10_000, undefined, { allowGlobalAdditions: false });
+  assert.match(wc.stdout, /^\s*2\s+sample\.txt/);
+  const listing = await executeReadOnly("ls", ["-1", "--", "."], undefined, root, 10_000, undefined, { allowGlobalAdditions: false });
+  assert.equal(listing.stdout, "sample.txt\n");
 });
 
 test("external find and git -C execute through the policy", async (t) => {

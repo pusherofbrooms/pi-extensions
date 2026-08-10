@@ -61,6 +61,7 @@ type OptionPolicy = {
   flags: ReadonlySet<string>;
   values: ReadonlyMap<string, (value: string) => boolean>;
   finish: (positionals: readonly string[], seen: ReadonlySet<string>) => boolean;
+  clusteredShortOptions?: boolean;
 };
 
 /** Positive parser shared by conventional tools whose CLI is flags followed by operands. */
@@ -79,6 +80,22 @@ function conventionalOptionsAllowed(args: readonly string[], policy: OptionPolic
     if (!afterOptions && policy.values.has(arg)) {
       if (++i >= args.length || !policy.values.get(arg)!(args[i])) return false;
       seen.add(arg); continue;
+    }
+    if (!afterOptions && policy.clusteredShortOptions && /^-[^-].+/.test(arg)) {
+      let valid = true;
+      for (let at = 1; at < arg.length; at++) {
+        const option = `-${arg[at]}`;
+        if (policy.flags.has(option)) { seen.add(option); continue; }
+        const validate = policy.values.get(option);
+        if (!validate) { valid = false; break; }
+        const attached = arg.slice(at + 1);
+        const value = attached || args[++i];
+        if (value === undefined || !validate(value)) valid = false;
+        else seen.add(option);
+        break;
+      }
+      if (!valid) return false;
+      continue;
     }
     if (!afterOptions && arg.startsWith("-")) return false;
     positionals.push(arg);
@@ -187,6 +204,43 @@ function gitInspectAllowed(args: readonly string[], sub: string): boolean {
   return true;
 }
 
+const anyGitValue = (value: string): boolean => value.length > 0 && value.length <= 4096;
+function gitConventionalAllowed(
+  args: readonly string[], flags: readonly string[], values: readonly string[],
+  finish: OptionPolicy["finish"] = () => true,
+): boolean {
+  return conventionalOptionsAllowed(args, {
+    flags: new Set(flags), values: new Map(values.map((option) => [option, anyGitValue])),
+    finish, clusteredShortOptions: true,
+  });
+}
+
+function gitReadOnlySubcommandAllowed(args: readonly string[], sub: string): boolean {
+  if (sub === "ls-files") return gitConventionalAllowed(args,
+    ["-c", "--cached", "-d", "--deleted", "-m", "--modified", "-o", "--others", "-i", "--ignored", "-s", "--stage", "-u", "--unmerged", "-k", "--killed", "--directory", "--no-empty-directory", "--eol", "--deduplicate", "--exclude-standard", "--full-name", "--recurse-submodules", "-z"],
+    ["-x", "--exclude", "-X", "--exclude-from", "--exclude-per-directory", "--with-tree", "--format"]);
+  if (sub === "grep") return gitConventionalAllowed(args,
+    ["-n", "--line-number", "-i", "--ignore-case", "-I", "--files-without-match", "-l", "--files-with-matches", "-L", "--files-without-match", "-w", "--word-regexp", "-v", "--invert-match", "-E", "--extended-regexp", "-F", "--fixed-strings", "-P", "--perl-regexp", "-q", "--quiet", "--all-match", "--break", "--heading", "-c", "--count", "--cached", "--no-index", "--untracked", "--no-color"],
+    ["-e", "--regexp", "-f", "--file", "--max-depth", "-A", "--after-context", "-B", "--before-context", "-C", "--context"],
+    (positionals, seen) => positionals.length > 0 || ["-e", "--regexp", "-f", "--file"].some((option) => seen.has(option)));
+
+  if (sub === "blame") {
+    // Move/copy detection accepts an optional score in attached form.
+    if (args.some((arg) => /^-[MC]\d*$/.test(arg))) args = args.filter((arg) => !/^-[MC]\d*$/.test(arg));
+    return gitConventionalAllowed(args,
+      ["-b", "--root", "--show-stats", "--score-debug", "-f", "--show-name", "-n", "--show-number", "-p", "--porcelain", "--line-porcelain", "-s", "--suppress-author", "-e", "--show-email", "-w", "--ignore-whitespace", "--incremental"],
+      ["-L", "--contents", "--ignore-rev", "--ignore-revs-file", "--date"],
+      (positionals) => positionals.length > 0);
+  }
+  if (sub === "ls-tree") return gitConventionalAllowed(args,
+    ["-d", "-r", "-t", "-l", "--long", "-z", "--name-only", "--name-status", "--object-only", "--full-name", "--full-tree", "--abbrev"], ["--format"],
+    (positionals) => positionals.length > 0);
+  if (sub === "cat-file") return args.length > 0 && gitConventionalAllowed(args,
+    ["-t", "-s", "-e", "-p", "--batch", "--batch-check", "--batch-command", "--batch-all-objects", "--unordered", "--buffer", "--follow-symlinks"],
+    ["--batch", "--batch-check", "--batch-command"]);
+  return false;
+}
+
 function gitAllowed(args: readonly string[]): boolean {
   const parsed = splitGitArgs(args);
   if (!parsed || !parsed.command.length) return false;
@@ -196,6 +250,7 @@ function gitAllowed(args: readonly string[]): boolean {
     || all(rest, /^(--list|-l|--all|-a|--remotes|-r|--verbose|-v|-vv|--no-color)$/);
   if (sub === "remote") return rest.length === 1 && ["-v", "--verbose"].includes(rest[0]);
   if (sub === "rev-parse") return rest.length > 0 && all(rest, /^(--show-toplevel|--show-prefix|--is-inside-work-tree|--is-bare-repository|--git-dir|--abbrev-ref|--verify|HEAD|[A-Za-z0-9._\/-]+(?:\^\{(?:commit|tree|tag|object)\})?)$/);
+  if (["ls-files", "grep", "blame", "ls-tree", "cat-file"].includes(sub)) return gitReadOnlySubcommandAllowed(rest, sub);
   return ["log", "show", "diff"].includes(sub) && gitInspectAllowed(rest, sub);
 }
 
@@ -237,6 +292,66 @@ function findAllowed(args: readonly string[]): boolean {
   return i === args.length || expression() && i === args.length;
 }
 
+function fileAllowed(args: readonly string[]): boolean {
+  let after = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!after && arg === "--") { after = true; continue; }
+    if (after || !arg.startsWith("-") || arg === "-") continue;
+    if (/^--(?:compile|magic-file|uncompress|uncompress-noreport|no-sandbox)(?:=|$)/.test(arg)) return false;
+    // These modes compile/load magic, invoke decompressors, or disable their sandbox.
+    // Inspect every member of a short cluster; -m/-M may carry their value attached.
+    if (!arg.startsWith("--") && /[CmMzZS]/.test(arg.slice(1))) return false;
+  }
+  return true;
+}
+
+function hasJqModuleLoading(filter: string): boolean {
+  let inString = false;
+  for (let i = 0; i < filter.length; i++) {
+    const char = filter[i];
+    if (inString) {
+      if (char === "\\") i++;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; continue; }
+    for (const keyword of ["import", "include"]) {
+      if (filter.startsWith(keyword, i)
+        && !/[A-Za-z0-9_]/.test(filter[i - 1] ?? "")
+        && !/[A-Za-z0-9_]/.test(filter[i + keyword.length] ?? "")) return true;
+    }
+  }
+  return false;
+}
+
+function jqAllowed(args: readonly string[]): boolean {
+  const flags = new Set(["-c", "--compact-output", "-n", "--null-input", "-e", "--exit-status", "-s", "--slurp", "-R", "--raw-input", "-r", "--raw-output", "-j", "--join-output", "-a", "--ascii-output", "-S", "--sort-keys", "-M", "--monochrome-output", "-C", "--color-output", "--unbuffered", "--stream", "--stream-errors", "--seq"]);
+  const values = new Set(["--arg", "--argjson"]);
+  const positionals: string[] = [];
+  let after = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!after && arg === "--") { after = true; continue; }
+    if (!after && flags.has(arg)) continue;
+    if (!after && /^-[cnesRrjaSMC]+$/.test(arg)) continue;
+    if (!after && values.has(arg)) { if (i + 2 >= args.length) return false; i += 2; continue; }
+    if (!after && arg.startsWith("--arg=")) return false;
+    if (!after && arg === "--indent") { if (++i >= args.length || !/^[0-9]$/.test(args[i])) return false; continue; }
+    if (!after && /^--indent=[0-9]$/.test(arg)) continue;
+    if (!after && arg.startsWith("-")) return false;
+    positionals.push(arg);
+  }
+  const filter = positionals[0];
+  return Boolean(filter) && !hasJqModuleLoading(filter);
+}
+
+function readOnlyUtilityAllowed(executable: string, args: readonly string[]): boolean {
+  if (executable === "file") return fileAllowed(args);
+  if (executable === "jq") return jqAllowed(args);
+  return true;
+}
+
 export function isBuiltInAllowed(executable: string, args: readonly string[]): boolean {
   if (args.length > MAX_ARGS || !args.every(safeToken)) return false;
   switch (executable) {
@@ -250,6 +365,8 @@ export function isBuiltInAllowed(executable: string, args: readonly string[]): b
     case "id": return all(args, /^(?:-[ugGnrz]+|--(?:user|group|groups|name|real|zero)|[A-Za-z0-9._-]+)$/) && args.filter((a) => !a.startsWith("-")).length <= 1;
     case "date": return all(args, /^(?:-u|--utc|--universal|--iso-8601(?:=(?:date|hours|minutes|seconds|ns))?|--rfc-3339=(?:date|seconds|ns)|--rfc-email|\+[^\r\n]{1,256})$/);
     case "tail": return tailAllowed(args);
+    case "ls": case "stat": case "head": case "wc": case "du": case "readlink": case "realpath": case "file": case "jq":
+      return readOnlyUtilityAllowed(executable, args);
     case "journalctl": return journalAllowed(args);
     case "find": return findAllowed(args);
     case "git": return gitAllowed(args);
@@ -286,14 +403,14 @@ function denialHint(executable: string, args: readonly string[]): string {
   if (executable === "git") {
     const parsed = splitGitArgs(args);
     const sub = parsed?.command[0];
-    if (!sub || !["status", "branch", "remote", "rev-parse", "log", "show", "diff"].includes(sub))
-      return "unsupported subcommand; use status, branch, remote, rev-parse, log, show, or diff";
+    if (!sub || !["status", "branch", "remote", "rev-parse", "log", "show", "diff", "ls-files", "grep", "blame", "ls-tree", "cat-file"].includes(sub))
+      return "unsupported Git inspection subcommand";
     if (hasInvalidGitFormat(args)) return "unsupported format; use safe fields, %n, and literal separators";
     return "arguments outside the safe inspection grammar";
   }
   if (executable === "rg") return "unsupported option or value; use basic search and output options";
   if (executable === "find") return "unsupported expression; use read-only tests and print actions";
-  if (["ps", "vmstat", "uptime", "uname", "df", "free", "who", "id", "date"].includes(executable))
+  if (["ps", "vmstat", "uptime", "uname", "df", "free", "who", "id", "date", "ls", "stat", "file", "head", "wc", "du", "readlink", "realpath", "jq"].includes(executable))
     return "unsupported option or value";
   return "executable not allowlisted";
 }
@@ -366,7 +483,7 @@ export async function executeReadOnly(executable: string, args: string[], reques
 
 export function createBashReadOnlyExtension(options: BashReadOnlyOptions = {}) {
   return function bashReadOnlyExtension(pi: ExtensionAPI) {
-    pi.registerTool({ name: "bash_read_only", label: "Bash (read only)", description: "Run a mostly-safe, deny-by-default inspection command as a structured executable and argument array. Primarily non-mutating, but inspection can have incidental side effects; this is not a sandbox. Explicit readable paths outside cwd are allowed. No shell, pipes, redirects, or executable paths.", promptSnippet: "Run curated, deny-by-default inspection commands as structured argv. Built-ins: ps, vmstat, uptime, uname, df, free, who, id, date, tail, journalctl, find, git, and rg; arguments are restricted to approved read-only forms.", parameters: Type.Object({ executable: Type.String(), args: Type.Array(Type.String(), { maxItems: MAX_ARGS }), cwd: Type.Optional(Type.String()), timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 30000 })) }), async execute(_id, params, signal, _update, ctx) { const result = await executeReadOnly(params.executable, params.args, params.cwd, ctx.cwd, params.timeoutMs, signal, options); const reason = result.reason ? `; ${result.reason}` : ""; return { content: [{ type: "text", text: `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}${result.truncated ? "\n[output truncated]" : ""}\n[exit ${result.code ?? "signal"}${reason}]` }], details: result }; } });
+    pi.registerTool({ name: "bash_read_only", label: "Bash (read only)", description: "Run a mostly-safe, deny-by-default inspection command as a structured executable and argument array. Primarily non-mutating, but inspection can have incidental side effects; this is not a sandbox. Explicit readable paths outside cwd are allowed. No shell, pipes, redirects, or executable paths.", promptSnippet: "Run curated, deny-by-default inspection commands as structured argv. Built-ins include filesystem/text inspection (ls, stat, file, head, tail, wc, du, readlink, realpath, find, rg, jq), system inspection, journalctl, and read-only Git subcommands; write, plugin, and external-command modes are denied.", parameters: Type.Object({ executable: Type.String(), args: Type.Array(Type.String(), { maxItems: MAX_ARGS }), cwd: Type.Optional(Type.String()), timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 30000 })) }), async execute(_id, params, signal, _update, ctx) { const result = await executeReadOnly(params.executable, params.args, params.cwd, ctx.cwd, params.timeoutMs, signal, options); const reason = result.reason ? `; ${result.reason}` : ""; return { content: [{ type: "text", text: `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}${result.truncated ? "\n[output truncated]" : ""}\n[exit ${result.code ?? "signal"}${reason}]` }], details: result }; } });
   };
 }
 export default createBashReadOnlyExtension();
