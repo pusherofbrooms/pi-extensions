@@ -7,7 +7,7 @@
 
 /** @type {NamedPattern[]} */
 export const SECRET_PATTERNS = [
-	{ name: "Private key block", regex: /-----BEGIN (?:RSA|EC|OPENSSH|DSA|PGP|PRIVATE) PRIVATE KEY-----/i },
+	{ name: "Private key block", regex: /-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA|PGP|ENCRYPTED) )?PRIVATE KEY-----/i },
 	{ name: "AWS access key", regex: /\bAKIA[0-9A-Z]{16}\b/ },
 	{ name: "GitHub personal access token", regex: /\bghp_[A-Za-z0-9]{36,}\b/ },
 	{ name: "Generic API key assignment", regex: /\b(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*["'][^"'\n]{8,}["']/i },

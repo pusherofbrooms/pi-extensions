@@ -20,3 +20,9 @@ test("detectSecret ignores normal content", () => {
 	const content = "export const answer = 42;";
 	assert.equal(detectSecret(content), undefined);
 });
+
+for (const prefix of ["", "ENCRYPTED ", "RSA ", "EC ", "OPENSSH ", "DSA ", "PGP "]) {
+	test(`detectSecret finds ${prefix || "standard "}private key header`, () => {
+		assert.equal(detectSecret("-----BEGIN " + prefix + "PRIVATE KEY-----"), "Private key block");
+	});
+}

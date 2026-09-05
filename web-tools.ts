@@ -173,7 +173,7 @@ async function readResponseText(response: Response, maxBytes = MAX_FETCH_RESPONS
   }
 }
 
-async function fetchJson(url: string, init: RequestInit = {}, timeoutMs = getTimeoutMs()): Promise<any> {
+export async function fetchJson(url: string, init: RequestInit = {}, timeoutMs = getTimeoutMs()): Promise<any> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -187,18 +187,18 @@ async function fetchJson(url: string, init: RequestInit = {}, timeoutMs = getTim
       },
     });
 
+    const body = await readResponseText(res);
     if (!res.ok) {
-      const body = await res.text().catch(() => "");
       throw new Error(`HTTP ${res.status} ${res.statusText}${body ? ` - ${body.slice(0, 300)}` : ""}`);
     }
 
-    return await res.json();
+    return JSON.parse(body);
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchText(url: string, init: RequestInit = {}, timeoutMs = getTimeoutMs()): Promise<string> {
+export async function fetchText(url: string, init: RequestInit = {}, timeoutMs = getTimeoutMs()): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -212,24 +212,24 @@ async function fetchText(url: string, init: RequestInit = {}, timeoutMs = getTim
       },
     });
 
+    const body = await readResponseText(res);
     if (!res.ok) {
-      const body = await res.text().catch(() => "");
       throw new Error(`HTTP ${res.status} ${res.statusText}${body ? ` - ${body.slice(0, 300)}` : ""}`);
     }
 
-    return await res.text();
+    return body;
   } finally {
     clearTimeout(timer);
   }
 }
 
-function decodeDuckDuckGoRedirect(url: string): string {
+export function decodeDuckDuckGoRedirect(url: string): string {
   if (!url.startsWith("/")) return url;
 
   try {
     const parsed = new URL(`https://duckduckgo.com${url}`);
     const redirected = parsed.searchParams.get("uddg");
-    if (redirected) return decodeURIComponent(redirected);
+    if (redirected) return redirected;
   } catch {
     // ignore parse failures and return original
   }

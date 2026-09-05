@@ -61,9 +61,8 @@ export function getFinalAssistantText(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role !== "assistant") continue;
-    for (const part of message.content) {
-      if (part.type === "text") return part.text;
-    }
+    const textParts = message.content.filter((part) => part.type === "text");
+    if (textParts.length > 0) return textParts.map((part) => part.text).join("");
   }
   return "";
 }
