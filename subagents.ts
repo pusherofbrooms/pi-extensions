@@ -1,15 +1,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { Message, Model } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	CONFIG_DIR_NAME,
+	truncateHead,
 	getAgentDir,
 	parseFrontmatter,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { defaultAgentRunUsage, runAgentSession, type AgentThinkingLevel } from "./agent-runner.ts";
+import { getFinalAssistantText, defaultAgentRunUsage, runAgentSession, type AgentThinkingLevel } from "./agent-runner.ts";
 import { Type } from "typebox";
 
 export type AgentScope = "user" | "project" | "both";
@@ -171,6 +173,28 @@ function getFinalOutput(messages: Message[]): string {
 		}
 	}
 	return "";
+}
+
+function isParallelFailure(result: SingleResult): boolean {
+	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+async function formatParallelResult(result: SingleResult, index: number): Promise<string> {
+	const failed = isParallelFailure(result);
+	const status = failed ? `failed (exit ${result.exitCode}${result.stopReason ? `, ${result.stopReason}` : ""})` : "completed";
+	const output = getFinalAssistantText(result.messages);
+	const diagnostics = failed ? [...new Set([result.errorMessage, result.stderr].filter(Boolean))].join("\n") : "";
+	const body = [diagnostics, output].filter(Boolean).join("\n\n") || "(no output)";
+	// Truncate each task independently so later tasks are never dropped.
+	const truncated = truncateHead(body);
+	let text = truncated.content;
+	if (truncated.truncated) {
+		const dir = await fs.promises.mkdtemp(path.join(tmpdir(), "pi-subagent-output-"));
+		const file = path.join(dir, "output.txt");
+		await fs.promises.writeFile(file, body, { encoding: "utf8", mode: 0o600 });
+		text += `\n\n[Output truncated to 2000 lines or 50 KB. Full output saved to: ${file}]`;
+	}
+	return `### Task ${index + 1}: [${result.agent}] ${status}\n\n${text}`;
 }
 
 export function parseThinkingLevel(value: unknown): AgentThinkingLevel | undefined {
@@ -517,6 +541,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description: [
 			"Delegate tasks to specialized subagents with isolated in-memory context. Modes: single (agent+task), parallel (tasks), chain (steps with {previous} placeholder).",
+			"Parallel outputs include per-task findings and diagnostics, capped at 2000 lines or 50 KB per task; full truncated output is saved to a temporary file.",
 			agentCapabilityDescription,
 		].join("\n\n"),
 		promptSnippet: `Delegate work to named subagents in isolated sessions (single, parallel, or chain modes).\n${agentCapabilityDescription}`,
@@ -628,10 +653,11 @@ export default function (pi: ExtensionAPI) {
 					runSingleAgent(ctx.cwd, agents, t.agent, t.task, t.cwd, undefined, signal, ctx, onUpdate, makeDetails("parallel"), parentThinkingLevel),
 				);
 
-				const successCount = results.filter((r) => r.exitCode === 0).length;
+				const successCount = results.filter((r) => !isParallelFailure(r)).length;
+				const summaries = await Promise.all(results.map(formatParallelResult));
 				return {
 					content: [
-						{ type: "text", text: `Parallel complete: ${successCount}/${results.length} succeeded.` },
+						{ type: "text", text: `Parallel complete: ${successCount}/${results.length} succeeded.\n\n${summaries.join("\n\n---\n\n")}` },
 					],
 					details: makeDetails("parallel")(results),
 				};
