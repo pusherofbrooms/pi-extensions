@@ -3,7 +3,7 @@
 This repo contains lightweight global extensions for Pi:
 
 1. **`show-system-prompt.ts`**
-2. **`bash-read-only.ts`**
+2. **`bash-read-only.ts`** (subagent factory, not a main-loop extension)
 3. **`web-tools.ts`**
 4. **`subagents.ts`**
 5. **`openai-codex-image-gen.ts`**
@@ -42,7 +42,7 @@ Adds a command named **`show-system-prompt`**.
   - `.pi/system-prompt.snapshot.md` (under current working directory)
 
 ## 2) `bash-read-only`
-Adds **`bash_read_only`**, a structured, mostly-safe inspection tool taking `executable`, `args`, and optional `cwd`/`timeoutMs`. It never invokes a shell and denies commands by default. Explicit argument policies cover `ps`, `vmstat`, `uptime`, `uname`, `df`, `free`, `who`, `id`, display-only `date`, command lookup through `which` (including `-a`/`-s`), broad read-only forms of `ls`, `stat`, `file`, `head`, `wc`, `du`, `readlink`, `realpath`, and `jq`, bounded `tail` (at most 10,000 lines), bounded query-only `journalctl` (at most 1,000 entries with `--no-pager`), a conservative positive grammar for stdout-only `find` (dangerous action tokens are rejected anywhere in its argument vector), constrained Git inspection (including `ls-files`, `grep`, `blame`, `ls-tree`, `cat-file`, leading `-C <dir>`, and `--no-pager`), and built-in `rg` reconnaissance. The broad utility policies reject known write, output-file, program/module-loading, decompressor, plugin, pager, and external-helper modes rather than restricting harmless formatting or platform-specific output options. The ripgrep policy supports searches, `--files`, globs, bounded context/count, file/type filters, and common listing/output flags through a reusable positive option parser; unknown options and input/config/preprocessor indirection (`-f`/`--file`, `--files-from`, `--pre`, and `--pre-glob`) are denied. Use `--` before patterns or paths beginning with a hyphen. All allowed executables, including `rg`, are spawned by command name using the parent Pi process's `PATH` (or a minimal system fallback if `PATH` is absent). This assumes Pi's `PATH` is trusted: a matching executable earlier on that path will be run. No other parent environment variables are inherited; the rest of the child environment is an explicit sanitized set. Explicit readable paths and working directories outside the session cwd are permitted; OS permissions govern access. Executable paths, follow/streaming and write modes, unsafe inherited environment variables, Git external execution, excessive runtime, and excessive output are blocked.
+Provides **`bash_read_only`** to selected subagents (not registered in the main loop by this package), a structured, mostly-safe inspection tool taking `executable`, `args`, and optional `cwd`/`timeoutMs`. It never invokes a shell and denies commands by default. Explicit argument policies cover `ps`, `vmstat`, `uptime`, `uname`, `df`, `free`, `who`, `id`, display-only `date`, command lookup through `which` (including `-a`/`-s`), broad read-only forms of `ls`, `stat`, `file`, `head`, `wc`, `du`, `readlink`, `realpath`, and `jq`, bounded `tail` (at most 10,000 lines), bounded query-only `journalctl` (at most 1,000 entries with `--no-pager`), a conservative positive grammar for stdout-only `find` (dangerous action tokens are rejected anywhere in its argument vector), constrained Git inspection (including `ls-files`, `grep`, `blame`, `ls-tree`, `cat-file`, leading `-C <dir>`, and `--no-pager`), and built-in `rg` reconnaissance. The broad utility policies reject known write, output-file, program/module-loading, decompressor, plugin, pager, and external-helper modes rather than restricting harmless formatting or platform-specific output options. The ripgrep policy supports searches, `--files`, globs, bounded context/count, file/type filters, and common listing/output flags through a reusable positive option parser; unknown options and input/config/preprocessor indirection (`-f`/`--file`, `--files-from`, `--pre`, and `--pre-glob`) are denied. Use `--` before patterns or paths beginning with a hyphen. All allowed executables, including `rg`, are spawned by command name using the parent Pi process's `PATH` (or a minimal system fallback if `PATH` is absent). This assumes Pi's `PATH` is trusted: a matching executable earlier on that path will be run. No other parent environment variables are inherited; the rest of the child environment is an explicit sanitized set. Explicit readable paths and working directories outside the session cwd are permitted; OS permissions govern access. Executable paths, follow/streaming and write modes, unsafe inherited environment variables, Git external execution, excessive runtime, and excessive output are blocked.
 
 Ordinary inspection syntax includes Git `log -n 5`, `status -sb`, revision expressions and `revision:path`, native pathspec globs/magic after `--`, and standard bounded-length pretty formats (including `%x09`, colors, width directives, and `tformat:`). Split Git inspection values (including `--format`, `--pretty`, and `--date`) are attached with `=` before execution so Git cannot reinterpret their contents as switches. Local queries `remote get-url`, `describe`, and `merge-base` do not fetch or contact remotes. Ripgrep accepts short clusters and attached values (`-nS`, `-C3`, `-g*.ts`); use `--` for hyphen-leading patterns since they can otherwise parse as options. `find -prune` supports excluding subtrees. Tail defaults to its native last 10 lines and still requires regular files; explicit counts remain capped at 10,000. Journal queries automatically prepend `--no-pager -n 100`; explicit validated counts override the default (maximum 1,000). Follow, maintenance, output-file, and external-command modes remain denied. This policy keeps honest agents honest, not hostile code contained; formatting can emit terminal control characters, and runtime/output caps still apply.
 
@@ -57,7 +57,7 @@ Policy denials return a short corrective hint without echoing the full argument 
 }
 ```
 
-The normal Pi session registers this tool as an extension and may use trusted global additions. Isolated `/goal` observer, researcher, and reviewer sessions receive a factory-configured instance named `goal-bash-read-only` while extension discovery and global additions remain disabled; the goal worker retains ordinary `bash` for implementation. The policy is primarily non-mutating, but inspection commands can have incidental side effects (for example filesystem access-time updates or Git implementation details). This is a defense-in-depth command policy, not an OS sandbox.
+Regular subagents receive a named inline factory only when their resolved `tools` list includes `bash_read_only`, even though extension discovery remains disabled. They honor trusted user-global additions; project policy files remain ignored. Isolated `/goal` observer, researcher, and reviewer sessions receive a factory-configured instance named `goal-bash-read-only` while extension discovery and global additions remain disabled; the goal worker retains ordinary `bash` for implementation. The policy is primarily non-mutating, but inspection commands can have incidental side effects (for example filesystem access-time updates or Git implementation details). This is a defense-in-depth command policy, not an OS sandbox.
 
 ## 3) `web-tools`
 Adds two tools:
@@ -111,6 +111,18 @@ Adds a subagent tool and command helpers:
 - Each subagent result includes the persisted Pi `sessionFile` path in tool/message details for later audit or self-improvement.
 
 Generic `subagent` remains freeform by default. Agents may be asked in their task text or agent prompt to return JSON, but the tool does not currently enforce report contracts or parse structured output. The structured report-contract machinery is intentionally kept in `/goal`, where lifecycle authority, validation, and merge policy are explicit. Optional generic report-contract mode is deferred until there is a concrete non-goal use case so existing `/agent`, alias, single, parallel, and chain behavior does not change unexpectedly.
+
+Bundled regular-agent tools:
+
+| Agent | Tools |
+|---|---|
+| scout / planner | `read`, `grep`, `find`, `ls`, `bash_read_only` (no `bash`) |
+| reviewer | `read`, `grep`, `find`, `ls`, `bash` |
+| worker | `read`, `grep`, `find`, `ls`, `bash`, `edit`, `write` |
+
+The reviewer may run validation with incidental caches/coverage/build artifacts, but must not make implementation edits, run autofix, update snapshots, commit, or push. It checks working tree status before/after validation and reports unexpected changes; dependency installs and destructive cleanup require explicit approval. These are prompt constraints, not a sandbox around reviewer `bash`.
+
+User and trusted project agent overrides retain their declared tools; missing tools retain the existing coding-tool defaults. Inline read-only registration follows the selected tools, not the agent name. Goal-agent access and policy are unchanged.
 
 ### Agent files
 Discovery order (by name override):

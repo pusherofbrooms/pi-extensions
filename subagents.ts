@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getFinalAssistantText, defaultAgentRunUsage, runAgentSession, type AgentThinkingLevel } from "./agent-runner.ts";
 import { Type } from "typebox";
+import { createBashReadOnlyExtension } from "./bash-read-only.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -346,6 +347,10 @@ async function runSingleAgent(
 		systemPrompt: agent.systemPrompt,
 		prompt: task,
 		tools,
+		// Discovery stays disabled; only explicitly selected tools get an inline factory.
+		inlineExtensions: tools.includes("bash_read_only")
+			? [{ name: "subagent-bash-read-only", factory: createBashReadOnlyExtension({ allowGlobalAdditions: true }) }]
+			: undefined,
 		model: resolvedModel,
 		thinkingLevel,
 		signal,

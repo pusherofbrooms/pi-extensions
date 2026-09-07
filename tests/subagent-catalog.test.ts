@@ -13,7 +13,7 @@ test("subagent capability catalog exposes names, descriptions, and tools", () =>
 	const byName = new Map(capabilities.map((agent) => [agent.name, agent]));
 
 	assert.deepEqual([...byName.keys()].sort(), ["planner", "reviewer", "scout", "worker"]);
-	assert.deepEqual(byName.get("scout")?.tools, ["read", "grep", "find", "ls"]);
+	assert.deepEqual(byName.get("scout")?.tools, ["read", "grep", "find", "ls", "bash_read_only"]);
 	assert.ok(byName.get("worker")?.tools.includes("edit"));
 
 	const description = formatAgentCapabilities(capabilities);
@@ -78,4 +78,15 @@ test("agent thinking levels are normalized and invalid values fail clearly", () 
 	assert.throws(() => parseThinkingLevel(null), /Invalid agent thinking level/);
 	assert.throws(() => parseThinkingLevel(3), /Invalid agent thinking level/);
 	assert.throws(() => parseThinkingLevel("extreme"), /Invalid agent thinking level/);
+});
+
+test("package main-loop manifest excludes the read-only extension and reviewer defines validation boundaries", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+	assert.equal(manifest.pi.extensions.includes("./bash-read-only.ts"), false);
+	assert.ok(manifest.pi.extensions.includes("./subagents.ts"));
+	const reviewer = await readFile(join(root, "agents/reviewer.md"), "utf8");
+	for (const boundary of [/incidental artifacts/, /Do not make implementation edits, run autofix, update snapshots, commit, or push/, /before and after validation/, /report unexpected working tree changes/, /Do not install dependencies or perform destructive cleanup without explicit approval/]) {
+		assert.match(reviewer, boundary);
+	}
 });

@@ -16,11 +16,11 @@ export const runAgentSession = (options) => globalThis.__subagentTestRun(options
 `)}`, import.meta.url);
 const { default: registerSubagents } = await import("../subagents.ts");
 
-function setup(run: (options: any) => any) {
+function setup(run: (options: any) => any, context = {}) {
   (globalThis as any).__subagentTestRun = run;
   let tool: any;
   registerSubagents({ registerTool(value: any) { tool = value; }, registerCommand() {}, on() {}, getThinkingLevel: () => "off" } as never);
-  return (params: any) => tool.execute("test", { agentScope: "project", ...params }, undefined, undefined, { cwd: process.cwd(), hasUI: false });
+  return (params: any) => tool.execute("test", { agentScope: "project", ...params }, undefined, undefined, { cwd: process.cwd(), hasUI: false, ...context });
 }
 const result = (output: string, extra = {}) => ({ messages: [{ role: "assistant", content: [{ type: "text", text: output }] }], exitCode: 0, usage: {}, ...extra });
 const text = (value: any) => value.content.map((c: any) => c.text).join("\n");
@@ -79,4 +79,69 @@ test("parallel joins final text blocks and treats error/abort stop reasons as fa
     assert.ok(text(value).includes("first second"));
     assert.ok(!text(value).includes("hidden"));
   }
+});
+
+test("regular agents load only selected inline tools in isolated SDK sessions", async (t) => {
+  const { DefaultResourceLoader, createAgentSession, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "pi-regular-tools-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const expected: Record<string, string[]> = {
+    scout: ["read", "grep", "find", "ls", "bash_read_only"],
+    planner: ["read", "grep", "find", "ls", "bash_read_only"],
+    reviewer: ["read", "grep", "find", "ls", "bash"],
+    worker: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+  };
+  const execute = setup(async (options) => {
+    assert.deepEqual(options.tools, expected[options.prompt]);
+    const selected = options.tools.includes("bash_read_only");
+    assert.equal(options.inlineExtensions?.length ?? 0, selected ? 1 : 0);
+    const settingsManager = SettingsManager.inMemory();
+    const loader = new DefaultResourceLoader({
+      cwd: dir, agentDir: dir, settingsManager, noExtensions: true,
+      extensionFactories: options.inlineExtensions,
+      noSkills: true, noPromptTemplates: true, noThemes: true,
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    const { session } = await createAgentSession({
+      cwd: dir, agentDir: dir, resourceLoader: loader, settingsManager,
+      sessionManager: SessionManager.inMemory(dir), tools: options.tools,
+    });
+    try {
+      assert.deepEqual(session.agent.state.tools.map(tool => tool.name).sort(), [...options.tools].sort());
+      const readOnly = session.agent.state.tools.find(tool => tool.name === "bash_read_only");
+      if (selected) {
+        assert.ok(readOnly);
+        const output = await readOnly.execute("inspect", { executable: "uname", args: [] });
+        assert.match(output.content.map((part: any) => part.text).join(""), /\[exit 0\]/);
+        await assert.rejects(readOnly.execute("denied", { executable: "bash", args: ["-c", "true"] }), /Denied bash:/);
+      }
+    } finally { session.dispose(); }
+    return result("ok");
+  });
+  for (const agent of Object.keys(expected)) await execute({ agent, task: agent });
+});
+
+test("trusted overrides select inline tools by tool name, not role name", async (t) => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const cwd = await mkdtemp(join(tmpdir(), "pi-regular-override-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await mkdir(join(cwd, ".pi", "agents"), { recursive: true });
+  for (const [name, tools] of [["scout", "read"], ["custom", "read, bash_read_only"], ["fallback", undefined]]) {
+    await writeFile(join(cwd, ".pi", "agents", `${name}.md`), `---\nname: ${name}\ndescription: Test override\n${tools ? `tools: ${tools}\n` : ""}---\nInspect only.\n`);
+  }
+  const runs: any[] = [];
+  const execute = setup(options => { runs.push(options); return result("ok"); }, { cwd, isProjectTrusted: () => true });
+  for (const agent of ["scout", "custom", "fallback"]) await execute({ agent, task: "inspect" });
+  assert.deepEqual(runs[0].tools, ["read"]);
+  assert.equal(runs[0].inlineExtensions, undefined);
+  assert.deepEqual(runs[1].tools, ["read", "bash_read_only"]);
+  assert.equal(runs[1].inlineExtensions.length, 1);
+  assert.deepEqual(runs[2].tools, ["read", "bash", "edit", "write", "grep", "find", "ls"]);
+  assert.equal(runs[2].inlineExtensions, undefined);
 });
