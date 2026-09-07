@@ -26,35 +26,34 @@ function boundedInteger(value: string, max: number, allowZero = false): boolean 
 }
 
 function tailAllowed(args: readonly string[]): boolean {
-  let bounded = false, files = 0, after = false;
+  let files = 0, after = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--") { after = true; continue; }
-    if (!after && (arg === "-n" || arg === "--lines")) { if (++i >= args.length || !boundedInteger(args[i], MAX_TAIL_LINES)) return false; bounded = true; continue; }
+    if (!after && (arg === "-n" || arg === "--lines")) { if (++i >= args.length || !boundedInteger(args[i], MAX_TAIL_LINES)) return false; continue; }
     const match = !after && arg.match(/^--lines=(\d+)$/);
-    if (match) { if (!boundedInteger(match[1], MAX_TAIL_LINES)) return false; bounded = true; continue; }
-    if (!after && /^-\d+$/.test(arg)) { if (!boundedInteger(arg.slice(1), MAX_TAIL_LINES)) return false; bounded = true; continue; }
+    if (match) { if (!boundedInteger(match[1], MAX_TAIL_LINES)) return false; continue; }
+    if (!after && /^-\d+$/.test(arg)) { if (!boundedInteger(arg.slice(1), MAX_TAIL_LINES)) return false; continue; }
     if (!after && arg.startsWith("-")) return false;
     files++;
   }
-  return bounded && files > 0;
+  return files > 0;
 }
 
 function journalAllowed(args: readonly string[]): boolean {
-  let bounded = false, noPager = false;
   const valueOptions = new Set(["-u", "--unit", "--user-unit", "-p", "--priority", "--since", "--until", "-t", "--identifier", "_PID", "_UID", "_COMM", "_EXE", "_SYSTEMD_UNIT"]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--no-pager") { noPager = true; continue; }
-    if (arg === "-n" || arg === "--lines") { if (++i >= args.length || !boundedInteger(args[i], MAX_JOURNAL_LINES, true)) return false; bounded = true; continue; }
-    const lines = arg.match(/^--lines=(\d+)$/); if (lines) { if (!boundedInteger(lines[1], MAX_JOURNAL_LINES, true)) return false; bounded = true; continue; }
+    if (arg === "--no-pager") { continue; }
+    if (arg === "-n" || arg === "--lines") { if (++i >= args.length || !boundedInteger(args[i], MAX_JOURNAL_LINES, true)) return false; continue; }
+    const lines = arg.match(/^--lines=(\d+)$/); if (lines) { if (!boundedInteger(lines[1], MAX_JOURNAL_LINES, true)) return false; continue; }
     if (["-b", "--boot", "-k", "--dmesg", "-r", "--reverse", "-q", "--quiet", "--utc", "--user", "--system", "-x", "--catalog", "--no-hostname"].includes(arg)) continue;
     const assignment = arg.match(/^(_PID|_UID|_COMM|_EXE|_SYSTEMD_UNIT)=(.{1,256})$/); if (assignment) continue;
     if (valueOptions.has(arg)) { if (++i >= args.length || args[i].startsWith("-") || args[i].length > 256) return false; continue; }
     if (/^--(unit|user-unit|priority|since|until|identifier)=.{1,256}$/.test(arg)) continue;
     return false;
   }
-  return bounded && noPager;
+  return true;
 }
 
 type OptionPolicy = {
@@ -65,7 +64,9 @@ type OptionPolicy = {
 };
 
 /** Positive parser shared by conventional tools whose CLI is flags followed by operands. */
-function conventionalOptionsAllowed(args: readonly string[], policy: OptionPolicy): boolean {
+type OptionDenial = "option" | "value" | "operands";
+function conventionalOptionsAllowed(args: readonly string[], policy: OptionPolicy, onDenied?: (reason: OptionDenial) => void): boolean {
+  const deny = (reason: OptionDenial): false => { onDenied?.(reason); return false; };
   const positionals: string[] = [], seen = new Set<string>();
   let afterOptions = false;
   for (let i = 0; i < args.length; i++) {
@@ -73,12 +74,12 @@ function conventionalOptionsAllowed(args: readonly string[], policy: OptionPolic
     if (!afterOptions && arg === "--") { afterOptions = true; continue; }
     if (!afterOptions && arg.startsWith("--") && arg.includes("=")) {
       const split = arg.indexOf("="), option = arg.slice(0, split), value = arg.slice(split + 1), validate = policy.values.get(option);
-      if (!validate?.(value)) return false;
+      if (!validate?.(value)) return deny(validate ? "value" : "option");
       seen.add(option); continue;
     }
     if (!afterOptions && policy.flags.has(arg)) { seen.add(arg); continue; }
     if (!afterOptions && policy.values.has(arg)) {
-      if (++i >= args.length || !policy.values.get(arg)!(args[i])) return false;
+      if (++i >= args.length || !policy.values.get(arg)!(args[i])) return deny("value");
       seen.add(arg); continue;
     }
     if (!afterOptions && policy.clusteredShortOptions && /^-[^-].+/.test(arg)) {
@@ -94,18 +95,19 @@ function conventionalOptionsAllowed(args: readonly string[], policy: OptionPolic
         else seen.add(option);
         break;
       }
-      if (!valid) return false;
+      if (!valid) return deny("value");
       continue;
     }
-    if (!afterOptions && arg.startsWith("-")) return false;
+    if (!afterOptions && arg.startsWith("-")) return deny("option");
     positionals.push(arg);
   }
-  return policy.finish(positionals, seen);
+  return policy.finish(positionals, seen) || deny("operands");
 }
 
 const rgValue = (value: string) => value.length > 0;
 const rgBound = (max: number) => (value: string) => boundedInteger(value, max, true);
 const RG_POLICY: OptionPolicy = {
+  clusteredShortOptions: true,
   flags: new Set([
     "-n", "--line-number", "--hidden", "-S", "--smart-case", "-i", "--ignore-case", "-s", "--case-sensitive",
     "-F", "--fixed-strings", "-w", "--word-regexp", "-x", "--line-regexp", "--no-ignore", "--no-ignore-vcs",
@@ -150,26 +152,56 @@ export function buildGitArgs(args: readonly string[]): string[] {
   if (!parsed) return [...args];
   const [sub, ...rest] = parsed.command;
   const disableContentDrivers = ["diff", "log", "show"].includes(sub) ? ["--no-ext-diff", "--no-textconv"] : [];
-  return ["--no-pager", "-c", "core.fsmonitor=false", ...parsed.globals, sub, ...disableContentDrivers, ...rest];
+  return ["--no-pager", "-c", "core.fsmonitor=false", ...parsed.globals, sub, ...disableContentDrivers, ...normalizeGitValues(sub, rest)];
+}
+
+/** Revision-parser long values may be equals-only or optional (--format/--pretty).
+ * Other accepted subcommands use required parse-options values; batch flags are
+ * valueless unless attached. Preserve pathspecs and short-option values verbatim.
+ */
+function normalizeGitValues(sub: string, args: readonly string[]): string[] {
+  const values = ["log", "show", "diff"].includes(sub) ? new Set(GIT_INSPECT_VALUES.keys())
+    : sub === "blame" ? new Set(["-L", "--contents", "--ignore-rev", "--ignore-revs-file", "--date"]) : new Set<string>();
+  const result: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") { result.push(...args.slice(i)); break; }
+    if (values.has(arg) && i + 1 < args.length) {
+      const value = args[++i];
+      if (arg.startsWith("--")) result.push(arg + "=" + value);
+      else result.push(arg, value);
+    } else result.push(arg);
+  }
+  return result;
 }
 
 const gitDate = (value: string): boolean => value.length <= 160 && (/^(?:relative|local|default|iso|iso-strict|rfc|short|raw|unix|human)$/.test(value)
   || /^format(?:-local)?:[^\r\n\0%]{0,128}(?:%(?:%|Y|y|m|d|H|M|S|z|Z|F|T|s)[^\r\n\0%]{0,128})*$/.test(value));
 const gitPretty = (value: string): boolean => /^(?:oneline|short|medium|full|fuller|reference|email|raw)$/.test(value);
-// Custom formats deliberately exclude %(atoms), %xNN escapes, colors, and width directives.
-const gitFormat = (value: string): boolean => value.length > 0 && value.length <= 256
-  && /^(?:[^%\r\n\0]|%(?:%|n|H|h|T|t|P|p|an|ae|aI|ad|ar|cn|ce|cI|cd|cr|s|f|b|B|d|D|N))*$/.test(value);
-const gitPrettyValue = (value: string): boolean => gitPretty(value) || value.startsWith("format:") && gitFormat(value.slice(7));
+// Native pretty formats are output data, not commands; retain token and execution limits.
+const gitFormat = (value: string): boolean => value.length > 0 && value.length <= 256 && safeToken(value);
+const gitPrettyValue = (value: string): boolean => gitPretty(value)
+  || /^(?:t?format):/.test(value) && gitFormat(value.slice(value.indexOf(":") + 1));
 
-// Keep revision and pathspec interpretation deliberately narrow. In particular, reject
-// reflogs, peel/exclusion operators, object:path, globs, and Git's :(magic) pathspecs.
-const gitRevisionAtom = String.raw`[A-Za-z0-9][A-Za-z0-9._/-]*(?:~[0-9]{1,6}|\^[0-9]{0,6}|\^\{(?:commit|tree|tag|object)\})?`;
-const gitRevision = new RegExp(`^(?:${gitRevisionAtom})(?:\\.\\.\\.?${gitRevisionAtom})?$`);
-function gitPathOperand(value: string): boolean {
-  return safeToken(value) && value.length > 0 && !/^(?::|!|\^)/.test(value) && !/[?*\[\\]/.test(value);
-}
+// Without a shell, Git revision expressions and native pathspecs are literal data.
+function gitPathOperand(value: string): boolean { return safeToken(value) && value.length > 0; }
+const gitRevision = { test: (value: string) => gitPathOperand(value) && !value.startsWith("-") };
 
-function gitInspectAllowed(args: readonly string[], sub: string): boolean {
+const GIT_INSPECT_VALUES = new Map<string, (value: string) => boolean>([
+  ["-n", (v) => boundedInteger(v, 10_000, true)], ["--date", gitDate], ["--pretty", gitPrettyValue],
+  ["--format", gitFormat], ["--max-count", (v) => boundedInteger(v, 10_000, true)], ["--skip", (v) => boundedInteger(v, 10_000, true)],
+  ["--since", (v) => v.length > 0 && v.length <= 128], ["--until", (v) => v.length > 0 && v.length <= 128],
+  ["--author", (v) => v.length > 0 && v.length <= 128], ["--committer", (v) => v.length > 0 && v.length <= 128], ["--grep", (v) => v.length > 0 && v.length <= 128],
+]);
+
+type GitInspectDenial = { reason: "option" | "value" | "output" | "helper" | "revisions" | "operand"; option?: string };
+function gitInspectAllowed(args: readonly string[], sub: string, onDenied?: (denial: GitInspectDenial) => void): boolean {
+  const deny = (reason: GitInspectDenial["reason"], token = ""): false => {
+    // Only report bounded option names, never attached values or arbitrary tokens.
+    const name = token.split("=", 1)[0];
+    const option = /^--[A-Za-z][A-Za-z0-9-]{0,63}$/.test(name) ? name : /^-[A-Za-z]/.test(name) ? name.slice(0, 2) : undefined;
+    onDenied?.({ reason, option }); return false;
+  };
   const common = ["--stat", "--shortstat", "--name-only", "--name-status", "--summary", "--no-color", "--patch", "-p", "--no-ext-diff", "--no-textconv"];
   const perCommand: Record<string, string[]> = {
     log: ["--oneline", "--reverse", "--all", "--branches", "--tags"],
@@ -177,29 +209,26 @@ function gitInspectAllowed(args: readonly string[], sub: string): boolean {
     diff: ["--reverse", "--cached", "--staged", "--check", "--compact-summary", "--binary", "--full-index", "--no-renames"],
   };
   const flags = new Set([...common, ...perCommand[sub]]);
-  const values = new Map<string, (value: string) => boolean>([
-    ["--date", gitDate], ["--pretty", gitPrettyValue],
-    ["--format", gitFormat], ["--max-count", (v) => boundedInteger(v, 10_000, true)], ["--skip", (v) => boundedInteger(v, 10_000, true)],
-    ["--since", (v) => v.length > 0 && v.length <= 128], ["--until", (v) => v.length > 0 && v.length <= 128],
-    ["--author", (v) => v.length > 0 && v.length <= 128], ["--committer", (v) => v.length > 0 && v.length <= 128], ["--grep", (v) => v.length > 0 && v.length <= 128],
-  ]);
+  const values = GIT_INSPECT_VALUES;
   let after = false, revisions = 0;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (!after && arg === "--") { after = true; continue; }
+    if (!after && /^--output(?:=|$)/.test(arg)) return deny("output", arg);
+    if (!after && /^--(?:ext-diff|textconv|exec|upload-pack)(?:=|$)/.test(arg)) return deny("helper", arg);
     if (!after && (/^-n?\d{1,4}$/.test(arg) || /^-U\d{1,3}$/.test(arg) || /^--unified=\d{1,3}$/.test(arg) || /^--decorate(?:=(?:short|full|auto|no))?$/.test(arg))) continue;
     if (!after && flags.has(arg)) continue;
     if (!after && arg.startsWith("--") && arg.includes("=")) {
       const at = arg.indexOf("="), validate = values.get(arg.slice(0, at));
       if (validate?.(arg.slice(at + 1))) continue;
-      return false;
+      return deny(validate ? "value" : "option", arg);
     }
-    if (!after && values.has(arg)) { if (++i < args.length && values.get(arg)!(args[i])) continue; return false; }
-    if (!after && arg.startsWith("-")) return false;
-    if (after) { if (!gitPathOperand(arg)) return false; continue; }
-    if (!gitRevision.test(arg)) return false;
+    if (!after && values.has(arg)) { if (++i < args.length && values.get(arg)!(args[i])) continue; return deny("value", arg); }
+    if (!after && arg.startsWith("-")) return deny(values.has(arg.slice(0, 2)) || /^--(?:unified|decorate)=/.test(arg) ? "value" : "option", arg);
+    if (after) { if (!gitPathOperand(arg)) return deny("operand"); continue; }
+    if (!gitRevision.test(arg)) return deny("operand");
     revisions++;
-    if (sub === "diff" && revisions > 2) return false;
+    if (sub === "diff" && revisions > 2) return deny("revisions");
   }
   return true;
 }
@@ -245,10 +274,18 @@ function gitAllowed(args: readonly string[]): boolean {
   const parsed = splitGitArgs(args);
   if (!parsed || !parsed.command.length) return false;
   const [sub, ...rest] = parsed.command;
-  if (sub === "status") return all(rest, /^(--short|-s|--branch|-b|--porcelain(?:=v[12])?|--untracked-files=(?:no|normal|all)|--ignored(?:=(?:traditional|matching|no))?)$/);
+  if (sub === "status") return all(rest, /^(--short|-[sb]+|--branch|--porcelain(?:=v[12])?|--untracked-files=(?:no|normal|all)|--ignored(?:=(?:traditional|matching|no))?)$/);
   if (sub === "branch") return (rest.length === 1 && rest[0] === "--show-current")
     || all(rest, /^(--list|-l|--all|-a|--remotes|-r|--verbose|-v|-vv|--no-color)$/);
-  if (sub === "remote") return rest.length === 1 && ["-v", "--verbose"].includes(rest[0]);
+  if (sub === "remote") return (rest.length === 1 && ["-v", "--verbose"].includes(rest[0]))
+    || rest[0] === "get-url" && gitConventionalAllowed(rest.slice(1), ["--push", "--all"], [], (pos) => pos.length === 1);
+  if (sub === "describe") return conventionalOptionsAllowed(rest, {
+    flags: new Set(["--all", "--tags", "--contains", "--always", "--long", "--exact-match", "--first-parent"]),
+    values: new Map([["--abbrev", (v) => boundedInteger(v, 40, true)], ["--candidates", (v) => boundedInteger(v, 10_000, true)], ["--match", anyGitValue], ["--exclude", anyGitValue]]),
+    finish: (pos) => pos.every(gitRevision.test),
+  });
+  if (sub === "merge-base") return gitConventionalAllowed(rest, ["-a", "--all", "--octopus", "--independent", "--is-ancestor", "--fork-point"], [],
+    (pos, seen) => pos.every(gitRevision.test) && (seen.has("--independent") ? pos.length >= 1 : seen.has("--fork-point") ? pos.length >= 1 && pos.length <= 2 : seen.has("--is-ancestor") ? pos.length === 2 : pos.length >= 2));
   if (sub === "rev-parse") return rest.length > 0 && all(rest, /^(--show-toplevel|--show-prefix|--is-inside-work-tree|--is-bare-repository|--git-dir|--abbrev-ref|--verify|HEAD|[A-Za-z0-9._\/-]+(?:\^\{(?:commit|tree|tag|object)\})?)$/);
   if (["ls-files", "grep", "blame", "ls-tree", "cat-file"].includes(sub)) return gitReadOnlySubcommandAllowed(rest, sub);
   return ["log", "show", "diff"].includes(sub) && gitInspectAllowed(rest, sub);
@@ -264,7 +301,7 @@ function findAllowed(args: readonly string[]): boolean {
   if (!roots) return false;
 
   const valuePrimaries = new Set(["-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-size", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-user", "-group", "-uid", "-gid", "-perm", "-links", "-printf"]);
-  const nullary = new Set(["-empty", "-readable", "-true", "-false", "-print", "-print0", "-ls"]);
+  const nullary = new Set(["-empty", "-readable", "-true", "-false", "-print", "-print0", "-ls", "-prune"]);
   const numeric = new Set(["-maxdepth", "-mindepth"]);
   const primary = (): boolean => {
     const token = args[i++];
@@ -392,36 +429,39 @@ export function isConfiguredAllowed(executable: string, args: readonly string[],
   return rules.some((rule) => rule.executable === executable && Array.isArray(rule.args) && rule.args.length === args.length && rule.args.every((arg, i) => arg === args[i]));
 }
 
-function hasInvalidGitFormat(args: readonly string[]): boolean {
-  const command = splitGitArgs(args)?.command;
-  if (!command) return false;
-  for (let i = 1; i < command.length; i++) {
-    const arg = command[i];
-    if (arg === "--format" || arg === "--pretty") {
-      const value = command[++i];
-      if (!value || value.startsWith("-") || !(arg === "--format" ? gitFormat(value) : gitPrettyValue(value))) return true;
-      continue;
-    }
-    const match = arg.match(/^--(format|pretty)=(.*)$/);
-    if (match && !(match[1] === "format" ? gitFormat(match[2]) : gitPrettyValue(match[2]))) return true;
-  }
-  return false;
-}
 
 function denialHint(executable: string, args: readonly string[]): string {
   if (args.length > MAX_ARGS) return `too many arguments; max ${MAX_ARGS}`;
   if (!args.every(safeToken)) return "arguments must be single-line tokens up to 4096 characters";
-  if (executable === "tail") return `require -n with 1..${MAX_TAIL_LINES} lines and a file`;
-  if (executable === "journalctl") return `require --no-pager and -n 0..${MAX_JOURNAL_LINES}`;
+  if (executable === "tail") return `use a regular file, optionally -n 1..${MAX_TAIL_LINES}; no follow or byte modes`;
+  if (executable === "journalctl") return `use query options, optionally -n 0..${MAX_JOURNAL_LINES}; no follow or maintenance modes`;
   if (executable === "git") {
     const parsed = splitGitArgs(args);
     const sub = parsed?.command[0];
-    if (!sub || !["status", "branch", "remote", "rev-parse", "log", "show", "diff", "ls-files", "grep", "blame", "ls-tree", "cat-file"].includes(sub))
+    if (!sub || !["status", "branch", "remote", "describe", "merge-base", "rev-parse", "log", "show", "diff", "ls-files", "grep", "blame", "ls-tree", "cat-file"].includes(sub))
       return "unsupported Git inspection subcommand";
-    if (hasInvalidGitFormat(args)) return "unsupported format; use safe fields, %n, and literal separators";
-    return "arguments outside the safe inspection grammar";
+    if (["log", "show", "diff"].includes(sub)) {
+      let hint = "unsupported inspection operand; use -- before paths";
+      gitInspectAllowed(parsed!.command.slice(1), sub, ({ reason, option }) => {
+        const name = option ? " " + option : "";
+        hint = reason === "output" ? "output-file option" + name + " is denied; use stdout instead"
+          : reason === "helper" ? "external-helper option" + name + " is denied; use --no-ext-diff and --no-textconv"
+          : reason === "revisions" ? "too many diff revisions; use at most two revisions and -- before paths"
+          : reason === "value" && ["--format", "--pretty"].includes(option ?? "") ? "unsupported format; use a named style or format:/tformat: with at most 256 single-line characters"
+          : reason === "value" ? "missing or invalid value for option" + name + "; check required values and numeric limits"
+          : reason === "option" ? "unsupported inspection option" + name + "; omit it or use -- before paths" : hint;
+      });
+      return hint;
+    }
+    return "unsupported inspection option or value; use -- before paths and no output-file or external-command options";
   }
-  if (executable === "rg") return "unsupported option or value; use basic search and output options";
+  if (executable === "rg") {
+    const denial: { reason: OptionDenial } = { reason: "option" };
+    conventionalOptionsAllowed(args, RG_POLICY, (value) => { denial.reason = value; });
+    return denial.reason === "operands" ? "supply a pattern or use --files/--type-list without -e"
+      : denial.reason === "value" ? "invalid option cluster or missing/invalid value; check attached values and context/count limits"
+      : "unsupported option; use search/output options and -- before hyphen-leading operands (no config or preprocessor modes)";
+  }
   if (executable === "find") return "unsupported expression; use read-only tests and print actions";
   if (["ps", "vmstat", "uptime", "uname", "df", "free", "who", "id", "date", "which", "ls", "stat", "file", "head", "wc", "du", "readlink", "realpath", "jq"].includes(executable))
     return "unsupported option or value";
@@ -436,6 +476,11 @@ async function loadRules(): Promise<ReadOnlyRule[]> {
 
 export function childEnvironment(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { PATH: parent.PATH || SAFE_PATH, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_PAGER: "cat", GIT_EXTERNAL_DIFF: "", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
+}
+
+/** Defaults precede user options so an explicit validated count wins. */
+export function buildJournalArgs(args: readonly string[]): string[] {
+  return ["--no-pager", "-n", "100", ...args];
 }
 
 async function prepareTailFiles(cwd: string, args: readonly string[]): Promise<{ args: string[]; handles: FileHandle[] }> {
@@ -470,7 +515,7 @@ export async function executeReadOnly(executable: string, args: string[], reques
   if (!isBuiltInAllowed(executable, args) && !isConfiguredAllowed(executable, args, rules)) throw new Error(`Denied ${executable}: ${denialHint(executable, args)}`);
   const root = await realpath(sessionCwd), cwd = await realpath(requestedCwd ? (isAbsolute(requestedCwd) ? requestedCwd : join(root, requestedCwd)) : root);
   const tail = executable === "tail" ? await prepareTailFiles(cwd, args) : undefined;
-  const commandArgs = executable === "git" ? buildGitArgs(args) : tail?.args ?? args;
+  const commandArgs = executable === "git" ? buildGitArgs(args) : executable === "journalctl" ? buildJournalArgs(args) : tail?.args ?? args;
 
   return await new Promise((resolve, reject) => {
     const grouped = process.platform !== "win32";

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import test from "node:test";
-import { buildGitArgs, childEnvironment, executeReadOnly, isBuiltInAllowed, isConfiguredAllowed } from "../bash-read-only.ts";
+import { buildJournalArgs, buildGitArgs, childEnvironment, executeReadOnly, isBuiltInAllowed, isConfiguredAllowed } from "../bash-read-only.ts";
 
 test("built-in policy is deny-by-default and blocks streaming modes", () => {
   assert.equal(isBuiltInAllowed("ps", ["-ef"]), true);
@@ -24,16 +24,16 @@ test("trusted additions require an exact structured argument vector", () => {
 
 test("policy denials give concise actionable diagnostics", async () => {
   const options = { allowGlobalAdditions: false };
-  await assert.rejects(() => executeReadOnly("git", ["show", "--format=%x09%H"], undefined, process.cwd(), 1000, undefined, options),
-    /Denied git: unsupported format; use safe fields, %n, and literal separators/);
+  await assert.rejects(() => executeReadOnly("git", ["show", "--pretty=custom"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied git: unsupported format; use a named style/);
   await assert.rejects(() => executeReadOnly("git", ["show", "--format=%H", "--output=/tmp/result"], undefined, process.cwd(), 1000, undefined, options),
-    /Denied git: arguments outside the safe inspection grammar/);
+    /Denied git: output-file option --output is denied/);
   await assert.rejects(() => executeReadOnly("git", ["show", "--format"], undefined, process.cwd(), 1000, undefined, options),
-    /Denied git: unsupported format; use safe fields, %n, and literal separators/);
-  await assert.rejects(() => executeReadOnly("tail", ["app.log"], undefined, process.cwd(), 1000, undefined, options),
-    /Denied tail: require -n with 1\.\.10000 lines and a file/);
-  await assert.rejects(() => executeReadOnly("journalctl", ["-n", "20"], undefined, process.cwd(), 1000, undefined, options),
-    /Denied journalctl: require --no-pager and -n 0\.\.1000/);
+    /Denied git: unsupported format; use a named style/);
+  await assert.rejects(() => executeReadOnly("tail", ["-f", "app.log"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied tail: use a regular file/);
+  await assert.rejects(() => executeReadOnly("journalctl", ["-n", "1001"], undefined, process.cwd(), 1000, undefined, options),
+    /Denied journalctl: use query options/);
   await assert.rejects(() => executeReadOnly("sh", ["-c", "id"], undefined, process.cwd(), 1000, undefined, options),
     /Denied sh: executable not allowlisted/);
 });
@@ -55,7 +55,7 @@ test("execution uses literal args and permits readable paths and cwd outside the
 });
 
 test("policies require finite bounds and reject write or execution switches", () => {
-  assert.equal(isBuiltInAllowed("tail", ["app.log"]), false);
+  assert.equal(isBuiltInAllowed("tail", ["app.log"]), true);
   assert.equal(isBuiltInAllowed("tail", ["-n", "10001", "app.log"]), false);
   assert.equal(isBuiltInAllowed("journalctl", ["--no-pager", "-n", "1001"]), false);
   assert.equal(isBuiltInAllowed("date", ["--set", "tomorrow"]), false);
@@ -70,7 +70,7 @@ test("policies require finite bounds and reject write or execution switches", ()
   assert.equal(isBuiltInAllowed("git", ["remote", "--verbose"]), true);
   assert.equal(isBuiltInAllowed("git", ["remote"]), false);
   assert.equal(isBuiltInAllowed("git", ["remote", "-v", "extra"]), false);
-  assert.equal(isBuiltInAllowed("git", ["remote", "get-url", "origin"]), false);
+  assert.equal(isBuiltInAllowed("git", ["remote", "get-url", "origin"]), true);
   assert.equal(isBuiltInAllowed("git", ["remote", "add", "origin", "https://example.com/repo.git"]), false);
   assert.equal(isBuiltInAllowed("ps", ["e"]), false);
   assert.deepEqual(buildGitArgs(["show", "HEAD"]), ["--no-pager", "-c", "core.fsmonitor=false", "show", "--no-ext-diff", "--no-textconv", "HEAD"]);
@@ -164,13 +164,13 @@ test("git inspection policy rejects execution, injection, writes, and unbounded 
   const denied = [
     ["log", "--exec=touch /tmp/pwn"], ["log", "-c", "core.pager=sh", "HEAD"], ["--config-env=x=y", "log"],
     ["diff", "--ext-diff"], ["diff", "--textconv"], ["diff", "--output=/tmp/diff"], ["diff", "--ita-invisible-in-index"],
-    ["show", "--pretty=format:%(trailers)"], ["show", "--format=%x1b[31m%H"], ["show", "--format=%C(red)%H"],
-    ["show", "--pretty=tformat:%H"], ["show", "--pretty=custom"], ["show", "--format"],
+
+    ["show", "--pretty=custom"], ["show", "--format"],
     ["log", "--date=not-a-date-mode"], ["log", "--date=format:%Y%n"], ["log", "--date"],
     ["log", "--max-count=10001"], ["log", "--skip=-1"], ["log", "--author="], ["log", "--unknown", "HEAD"],
-    ["log", "--", "safe\nunsafe"], ["log", "HEAD@{1}"], ["show", "HEAD:path"], ["show", "HEAD^!"],
-    ["diff", "HEAD", "main", "third"], ["diff", "--", ":(top)file"], ["diff", "--", "*.ts"],
-    ["diff", "--", "[ab].txt"], ["diff", "--", "!excluded"],
+    ["log", "--", "safe\nunsafe"],
+    ["diff", "HEAD", "main", "third"],
+
     ["archive", "HEAD"], ["checkout", "main"], ["tag", "new-tag"],
   ];
   for (const args of denied) assert.equal(isBuiltInAllowed("git", args), false, args.join(" "));
@@ -208,9 +208,9 @@ test("rg policy allows reconnaissance and rejects indirection and unknown option
   const denied = [
     ["--pre", "cat", "x"], ["--pre-glob", "*.zip", "x"], ["-f", "patterns", "."], ["--file=patterns", "."],
     ["--files-from", "paths"], ["--config-path", "config", "x"], ["--unknown", "x"], ["-C", "101", "x"],
-    ["-m", "10001", "x"], ["-e"], ["-leading", "."], ["--files", "-e", "x"],
+    ["-m", "10001", "x"], ["-e"], ["--files", "-e", "x"],
     ["--sort", "name", "x"], ["--sort=name", "x"], ["--glob", "", "x"], ["--glob=", "x"],
-    ["--files", "--type-list"], ["-nS", "x"], ["-C3", "x"], ["-tts", "x"],
+    ["--files", "--type-list"],
   ];
   assert.equal(isBuiltInAllowed("rg", ["--sort", "path", "x"]), true);
   assert.equal(isBuiltInAllowed("rg", ["--sort=modified", "x"]), true);
@@ -259,6 +259,37 @@ test("external find and git -C execute through the policy", async (t) => {
   await promisify(execFile)("git", ["init", "--quiet", root]);
   const git = await executeReadOnly("git", ["-C", root, "rev-parse", "--show-toplevel"], undefined, root, 10_000, undefined, { allowGlobalAdditions: false });
   assert.equal(git.stdout.trim(), await realpath(root));
+  await promisify(execFile)("git", ["-C", root, "add", "sample.txt"]);
+  await promisify(execFile)("git", ["-C", root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "sample"]);
+  const inspect = (args: string[]) => executeReadOnly("git", args, undefined, root, 10_000, undefined, { allowGlobalAdditions: false });
+  assert.equal((await inspect(["show", "HEAD:sample.txt"])).stdout, "sample\n");
+  assert.match((await inspect(["log", "-n", "5", "--pretty=tformat:%s%x09%h", "--", ":(glob)*.txt"])).stdout, /^sample\t[0-9a-f]+\n$/);
+  for (const sub of ["log", "show", "diff"]) {
+    for (const option of ["--format", "--since", "--until", "--author", "--committer", "--grep"]) {
+      for (const existing of [false, true]) {
+        const output = join(root, "result");
+        if (existing) await writeFile(output, "sentinel");
+        else await rm(output, { force: true });
+        const args = [sub, option, "--output=" + output, "-n", "1"];
+        assert.equal(isBuiltInAllowed("git", args), true);
+        await inspect(args);
+        if (existing) assert.equal(await readFile(output, "utf8"), "sentinel", args.join(" "));
+        else await assert.rejects(readFile(output), { code: "ENOENT" });
+      }
+    }
+  }
+  for (const option of ["--pretty", "--date", "--max-count", "--skip", "-n"]) {
+    await assert.rejects(inspect(["log", option, "--output=" + join(root, "result")]), /Denied git/);
+    assert.equal(await readFile(join(root, "result"), "utf8"), "sentinel");
+  }
+  assert.equal((await inspect(["log", "--format", "%s", "-n", "1"])).stdout, "sample\n");
+  assert.equal((await inspect(["log", "--pretty", "tformat:%s", "-n", "1"])).stdout, "sample\n");
+  assert.match((await inspect(["log", "--date", "format:%Y", "--format", "%ad", "-n", "1"])).stdout, /^\d{4}\n$/);
+  assert.equal((await inspect(["blame", "--date", "short", "sample.txt"])).code, 0);
+  assert.equal((await inspect(["status", "-sb"])).code, 0);
+  assert.equal((await inspect(["describe", "--always"])).code, 0);
+  assert.equal((await inspect(["merge-base", "HEAD", "HEAD"])).code, 0);
+
 });
 
 test("pre-aborted execution does not spawn", async (t) => {
@@ -267,4 +298,70 @@ test("pre-aborted execution does not spawn", async (t) => {
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(() => executeReadOnly("uptime", [], undefined, root, 1000, controller.signal, { allowGlobalAdditions: false }), /before start/);
+});
+
+test("ordinary inspection syntax and bounded defaults", async (t) => {
+  for (const args of [
+    ["log", "-n", "5"], ["status", "-sb"], ["show", "HEAD:path"],
+    ["log", "HEAD@{1}", "HEAD~2^!"], ["show", "--pretty=tformat:%H%x09%an"],
+    ["show", "--format=%C(auto)%h %<(20)%s %(trailers)"],
+    ["diff", "--", ":(glob,top)**/*.ts", ":(exclude)tests/**"],
+    ["remote", "get-url", "--all", "origin"], ["describe", "--tags", "--always"],
+    ["merge-base", "--is-ancestor", "HEAD~1", "HEAD"],
+  ]) assert.equal(isBuiltInAllowed("git", args), true, args.join(" "));
+  for (const args of [["-nS", "x"], ["-C3", "x"], ["-tts", "x"], ["-nig*.ts", "x"]])
+    assert.equal(isBuiltInAllowed("rg", args), true);
+  for (const args of [["-nSfsecret", "x"], ["-C101", "x"], ["-nC"], ["-nQ", "x"]])
+    assert.equal(isBuiltInAllowed("rg", args), false);
+  assert.equal(isBuiltInAllowed("find", [".", "-name", ".git", "-prune", "-o", "-print"]), true);
+  assert.equal(isBuiltInAllowed("journalctl", []), true);
+  assert.equal(isBuiltInAllowed("journalctl", ["-u", "service"]), true);
+  assert.deepEqual(buildJournalArgs(["-n", "20"]), ["--no-pager", "-n", "100", "-n", "20"]);
+  for (const args of [["remote", "set-url", "origin", "url"], ["describe", "--output=x"], ["merge-base", "--output=x", "HEAD", "main"]])
+    assert.equal(isBuiltInAllowed("git", args), false);
+  const root = await mkdtemp(join(tmpdir(), "bash-ro-default-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "log"), Array.from({ length: 20 }, (_, i) => i + "\n").join(""));
+  const result = await executeReadOnly("tail", ["log"], undefined, root, 1000, undefined, { allowGlobalAdditions: false });
+  assert.equal(result.stdout, Array.from({ length: 10 }, (_, i) => (i + 10) + "\n").join(""));
+});
+
+test("journal execution injects defaults before explicit line overrides", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bash-ro-journal-"));
+  const oldPath = process.env.PATH;
+  t.after(async () => {
+    if (oldPath === undefined) delete process.env.PATH;
+    else process.env.PATH = oldPath;
+    await rm(root, { recursive: true, force: true });
+  });
+  // A PATH fixture exercises the real spawn path without requiring a system journal.
+  const executable = join(root, "journalctl");
+  await writeFile(executable, "#!" + process.execPath + "\nconsole.log(JSON.stringify(process.argv.slice(2)));\n");
+  await chmod(executable, 0o755);
+  process.env.PATH = root;
+  for (const args of [[], ["-n", "0"], ["--lines=20"], ["--lines", "5"]]) {
+    const result = await executeReadOnly("journalctl", args, undefined, root, 1000, undefined, { allowGlobalAdditions: false });
+    assert.equal(result.code, 0);
+    assert.deepEqual(JSON.parse(result.stdout), ["--no-pager", "-n", "100", ...args]);
+  }
+});
+
+test("git inspection diagnostics report names, not values or path operands", async () => {
+  const deny = (args: string[]) => executeReadOnly("git", args, undefined, process.cwd(), 1000, undefined, { allowGlobalAdditions: false });
+  for (const [args, message] of [
+    [["log", "--unsupported"], /unsupported inspection option --unsupported;/],
+    [["log", "--output=/sensitive"], /output-file option --output is denied/],
+    [["log", "--ext-diff"], /external-helper option --ext-diff is denied/],
+    [["log", "-n", "invalid"], /missing or invalid value for option -n;/],
+    [["log", "-n"], /missing or invalid value for option -n;/],
+    [["diff", "a", "b", "c", "--", "--pretty=custom"], /too many diff revisions/],
+    [["log", "--grep", "--pretty=custom", "--unsupported"], /unsupported inspection option --unsupported;/],
+  ] as [string[], RegExp][]) {
+    await assert.rejects(deny(args), (error: Error) => {
+      assert.match(error.message, message);
+      assert.doesNotMatch(error.message, /sensitive|custom/);
+      return true;
+    });
+  }
+  assert.equal(isBuiltInAllowed("git", ["log", "--", "--pretty=custom", "--output=/sensitive"]), true);
 });
