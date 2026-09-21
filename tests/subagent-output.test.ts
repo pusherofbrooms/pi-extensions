@@ -52,6 +52,36 @@ test("single and chain keep existing content and previous-output substitution", 
   assert.deepEqual(prompts, ["single", "first", "next first"]);
 });
 
+test("single surfaces backend failures instead of stale progress or empty output", async () => {
+  for (const partial of ["", "Still investigating"]) {
+    const execute = setup(() => result(partial, {
+      exitCode: 1, stopReason: "error", errorMessage: "Synthetic backend rejection",
+      sessionFile: "/tmp/synthetic-session.jsonl",
+    }));
+    const output = text(await execute({ agent: "reviewer", task: "inspect" }));
+    assert.match(output, /failed \(exit 1, error\)/);
+    assert.match(output, /Synthetic backend rejection/);
+    assert.match(output, /Session: \/tmp\/synthetic-session.jsonl/);
+    if (partial) assert.match(output, /Partial output \(incomplete\):\nStill investigating/);
+  }
+});
+
+test("chain stops on error or abort even when exit code is zero and exposes diagnostics", async () => {
+  for (const stopReason of ["error", "aborted"]) {
+    let calls = 0;
+    const execute = setup(() => { calls++; return result("", {
+      exitCode: 0, stopReason, errorMessage: "Synthetic failure", stderr: "Extra diagnostic",
+      sessionFile: "/tmp/chain-session.jsonl",
+    }); });
+    const output = text(await execute({ chain: [
+      { agent: "scout", task: "first" }, { agent: "worker", task: "must not run" },
+    ] }));
+    assert.equal(calls, 1);
+    for (const expected of ["Chain stopped at step 1", `failed (exit 0, ${stopReason})`, "Synthetic failure", "Extra diagnostic", "Session: /tmp/chain-session.jsonl"])
+      assert.ok(output.includes(expected), expected);
+  }
+});
+
 test("parallel truncates each task independently and preserves full output in a file", async () => {
   const { readFile, rm } = await import("node:fs/promises");
   const { dirname } = await import("node:path");

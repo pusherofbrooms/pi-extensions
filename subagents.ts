@@ -176,16 +176,25 @@ function getFinalOutput(messages: Message[]): string {
 	return "";
 }
 
-function isParallelFailure(result: SingleResult): boolean {
+function isAgentFailure(result: SingleResult): boolean {
 	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 }
 
-async function formatParallelResult(result: SingleResult, index: number): Promise<string> {
-	const failed = isParallelFailure(result);
-	const status = failed ? `failed (exit ${result.exitCode}${result.stopReason ? `, ${result.stopReason}` : ""})` : "completed";
+function failureStatus(result: SingleResult): string {
+	return `failed (exit ${result.exitCode}${result.stopReason ? `, ${result.stopReason}` : ""})`;
+}
+
+function resultBody(result: SingleResult): string {
 	const output = getFinalAssistantText(result.messages);
-	const diagnostics = failed ? [...new Set([result.errorMessage, result.stderr].filter(Boolean))].join("\n") : "";
-	const body = [diagnostics, output].filter(Boolean).join("\n\n") || "(no output)";
+	if (!isAgentFailure(result)) return output || "(no output)";
+	const diagnostics = [...new Set([result.errorMessage, result.stderr].filter(Boolean))].join("\n");
+	return [
+		diagnostics || "No diagnostic was provided.",
+		output ? `Partial output (incomplete):\n${output}` : "",
+	].filter(Boolean).join("\n\n");
+}
+
+async function truncateResultBody(body: string): Promise<string> {
 	// Truncate each task independently so later tasks are never dropped.
 	const truncated = truncateHead(body);
 	let text = truncated.content;
@@ -195,7 +204,21 @@ async function formatParallelResult(result: SingleResult, index: number): Promis
 		await fs.promises.writeFile(file, body, { encoding: "utf8", mode: 0o600 });
 		text += `\n\n[Output truncated to 2000 lines or 50 KB. Full output saved to: ${file}]`;
 	}
-	return `### Task ${index + 1}: [${result.agent}] ${status}\n\n${text}`;
+	return text;
+}
+
+async function formatAgentResult(result: SingleResult): Promise<string> {
+	if (!isAgentFailure(result)) return getFinalOutput(result.messages) || "(no output)";
+	const body = await truncateResultBody(resultBody(result));
+	const session = result.sessionFile ? `\n\nSession: ${result.sessionFile}` : "";
+	return `[${result.agent}] ${failureStatus(result)}\n\n${body}${session}`;
+}
+
+async function formatParallelResult(result: SingleResult, index: number): Promise<string> {
+	const status = isAgentFailure(result) ? failureStatus(result) : "completed";
+	const body = await truncateResultBody(resultBody(result));
+	const session = isAgentFailure(result) && result.sessionFile ? `\n\nSession: ${result.sessionFile}` : "";
+	return `### Task ${index + 1}: [${result.agent}] ${status}\n\n${body}${session}`;
 }
 
 export function parseThinkingLevel(value: unknown): AgentThinkingLevel | undefined {
@@ -463,7 +486,7 @@ export default function (pi: ExtensionAPI) {
 			pi.getThinkingLevel(),
 		);
 
-		const text = getFinalOutput(result.messages) || result.stderr || "(no output)";
+		const text = await formatAgentResult(result);
 		pi.sendMessage({
 			customType: "subagent-command",
 			content: `[${agentName}] ${text}`,
@@ -473,7 +496,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (ctx.hasUI) {
 			const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
-			if (result.exitCode !== 0) {
+			if (isAgentFailure(result)) {
 				ctx.ui.notify(`Agent ${agentName} failed (${seconds}s)`, "error");
 			} else {
 				ctx.ui.notify(`Agent ${agentName} finished (${seconds}s)`, "info");
@@ -627,9 +650,9 @@ export default function (pi: ExtensionAPI) {
 						parentThinkingLevel,
 					);
 					results.push(result);
-					if (result.exitCode !== 0) {
+					if (isAgentFailure(result)) {
 						return {
-							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}).` }],
+							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}).\n\n${await formatAgentResult(result)}` }],
 							details: makeDetails("chain")(results),
 						};
 					}
@@ -658,7 +681,7 @@ export default function (pi: ExtensionAPI) {
 					runSingleAgent(ctx.cwd, agents, t.agent, t.task, t.cwd, undefined, signal, ctx, onUpdate, makeDetails("parallel"), parentThinkingLevel),
 				);
 
-				const successCount = results.filter((r) => !isParallelFailure(r)).length;
+				const successCount = results.filter((r) => !isAgentFailure(r)).length;
 				const summaries = await Promise.all(results.map(formatParallelResult));
 				return {
 					content: [
@@ -684,7 +707,7 @@ export default function (pi: ExtensionAPI) {
 				);
 
 				return {
-					content: [{ type: "text", text: getFinalOutput(result.messages) || result.stderr || "(no output)" }],
+					content: [{ type: "text", text: await formatAgentResult(result) }],
 					details: makeDetails("single")([result]),
 				};
 			}
