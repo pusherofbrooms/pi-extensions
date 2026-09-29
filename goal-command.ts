@@ -13,8 +13,8 @@ export interface GoalCommandServices {
   checkNoSecrets(value: string | undefined, label: string): string | undefined;
   goalPath(id: string): string;
   goalSummary(goal: StoredGoal): string;
-  listScaffolds(cwd: string): Promise<GoalScaffold[]>;
-  loadScaffold(cwd: string, id?: string): Promise<GoalScaffold>;
+  listScaffolds(ctx: ExtensionContext): Promise<GoalScaffold[]>;
+  loadScaffold(ctx: ExtensionContext, id?: string): Promise<GoalScaffold>;
   makeId(): string;
   mutateCurrentGoal(cwd: string, mutator: (goal: StoredGoal) => StoredGoal): Promise<StoredGoal | undefined>;
   now(): string;
@@ -95,7 +95,7 @@ export function registerGoalCommand(pi: ExtensionAPI, services: GoalCommandServi
         return;
       }
       if (subcommand === "scaffolds") {
-        const scaffolds = await services.listScaffolds(ctx.cwd);
+        const scaffolds = await services.listScaffolds(ctx);
         ctx.ui.notify(scaffolds.map((item) => `${item.id} (${item.source}) — ${item.description}\n  ${scaffoldPolicyText(item).replace(/\n/g, "\n  ")}`).join("\n"), "info");
         return;
       }
@@ -107,11 +107,11 @@ export function registerGoalCommand(pi: ExtensionAPI, services: GoalCommandServi
           return;
         }
         if (!value || value === "status") {
-          const scaffold = await services.loadScaffold(ctx.cwd, current.scaffold ?? "default");
+          const scaffold = await services.loadScaffold(ctx, current.scaffold ?? "default");
           ctx.ui.notify(`Current scaffold: ${scaffold.id} (${scaffold.source})\n${scaffold.description}\n${scaffoldPolicyText(scaffold)}`, "info");
           return;
         }
-        const scaffold = await services.loadScaffold(ctx.cwd, value);
+        const scaffold = await services.loadScaffold(ctx, value);
         if (scaffold.source === "bundled" && scaffold.id === "default" && value !== "default") {
           ctx.ui.notify(`Scaffold not found: ${value}`, "warning");
           return;
@@ -203,7 +203,7 @@ export function registerGoalCommand(pi: ExtensionAPI, services: GoalCommandServi
         ctx.ui.notify(`Refusing to store goal objective: ${secretError}.`, "warning");
         return;
       }
-      const scaffold = await services.loadScaffold(ctx.cwd, "default");
+      const scaffold = await services.loadScaffold(ctx, "default");
       const goal = await services.writeGoal(createStoredGoal({
         id: services.makeId(),
         cwd: ctx.cwd,

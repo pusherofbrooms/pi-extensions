@@ -24,7 +24,7 @@ const MAX_STORED_ITERATIONS = 50;
 type AgentRun = { report: GoalAgentReport; sessionFile?: string; repairSessionFile?: string };
 
 export type GoalContinuationServices = {
-  loadScaffold: (cwd: string, id?: string) => Promise<GoalScaffold>;
+  loadScaffold: (ctx: ExtensionContext, id?: string) => Promise<GoalScaffold>;
   runScheduledStrategicReview: (goal: StoredGoal, scaffold: GoalScaffold, ctx: ExtensionContext, thinkingLevel: ReturnType<ExtensionAPI["getThinkingLevel"]>, plan: ReturnType<typeof selectGoalWorkflowPlan>, deps: GoalRuntimeDeps) => Promise<AgentRun>;
   runGoalObserver: GoalContinuationServices["runScheduledStrategicReview"];
   runGoalResearcher: GoalContinuationServices["runScheduledStrategicReview"];
@@ -88,7 +88,7 @@ export async function runDelegatedContinuation(pi: ExtensionAPI, ctx: ExtensionC
   const thinkingLevel = pi.getThinkingLevel();
   if (ctx.hasUI) ctx.ui.notify(`Running delegated goal step ${goal.stepCount + 1}...`, "info");
   const phase = currentGoalPhase(goal);
-  const scaffold = await services.loadScaffold(ctx.cwd, phase?.scaffold ?? goal.scaffold ?? "default");
+  const scaffold = await services.loadScaffold(ctx, phase?.scaffold ?? goal.scaffold ?? "default");
   const workflowPlan = selectGoalWorkflowPlan(scaffold);
 
   if (scheduledReviewDue(goal)) {

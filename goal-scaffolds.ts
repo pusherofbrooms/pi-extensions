@@ -63,17 +63,21 @@ async function listScaffoldsFromDir(baseDir: string, source: GoalScaffold["sourc
   return scaffolds;
 }
 
-export async function loadScaffold(dirs: ScaffoldDirectories, id = "default"): Promise<GoalScaffold> {
+export async function loadScaffold(dirs: ScaffoldDirectories, id = "default", projectTrusted = false): Promise<GoalScaffold> {
+  // IDs name a single scaffold directory, never a path into another trust scope.
+  if (!id || id === "." || id === ".." || /[/\\]/.test(id)) id = "default";
   for (const [base, source] of [[dirs.project, "project"], [dirs.user, "user"], [dirs.bundled, "bundled"]] as const) {
+    if (source === "project" && !projectTrusted) continue;
     const scaffold = await readScaffoldFile(base, id, source);
     if (scaffold) return scaffold;
   }
-  return id === "default" ? FALLBACK_DEFAULT_SCAFFOLD : loadScaffold(dirs, "default");
+  return id === "default" ? FALLBACK_DEFAULT_SCAFFOLD : loadScaffold(dirs, "default", projectTrusted);
 }
 
-export async function listScaffolds(dirs: ScaffoldDirectories): Promise<GoalScaffold[]> {
+export async function listScaffolds(dirs: ScaffoldDirectories, projectTrusted = false): Promise<GoalScaffold[]> {
   const byId = new Map<string, GoalScaffold>();
   for (const [base, source] of [[dirs.bundled, "bundled"], [dirs.user, "user"], [dirs.project, "project"]] as const) {
+    if (source === "project" && !projectTrusted) continue;
     for (const scaffold of await listScaffoldsFromDir(base, source)) byId.set(scaffold.id, scaffold);
   }
   if (!byId.has("default")) byId.set("default", FALLBACK_DEFAULT_SCAFFOLD);

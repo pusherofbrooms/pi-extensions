@@ -16,8 +16,8 @@ export interface GoalToolServices {
   reloadRuntime(ctx: ExtensionContext): Promise<StoredGoal | undefined>;
   updateStatus(ctx: ExtensionContext, goal: StoredGoal | undefined): void;
   queueContinuation(pi: ExtensionAPI, ctx: ExtensionContext, goal: StoredGoal): void;
-  listScaffolds(cwd: string): Promise<GoalScaffold[]>;
-  loadScaffold(cwd: string, id?: string): Promise<GoalScaffold>;
+  listScaffolds(ctx: ExtensionContext): Promise<GoalScaffold[]>;
+  loadScaffold(ctx: ExtensionContext, id?: string): Promise<GoalScaffold>;
   checkNoSecrets(value: string | undefined, label: string): string | undefined;
   now(): string;
   makeId(): string;
@@ -97,7 +97,7 @@ export function registerGoalTools(pi: ExtensionAPI, services: GoalToolServices):
     description: "List available /goal scaffolds with their merge/review policy. Use before choosing a scaffold for a new or current goal.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-      const scaffolds = await listScaffolds(ctx.cwd);
+      const scaffolds = await listScaffolds(ctx);
       return {
         content: [{ type: "text", text: scaffolds.map((item) => `${item.id} (${item.source}) — ${item.description}\n${scaffoldPolicyText(item)}`).join("\n\n") }],
         details: { scaffolds },
@@ -111,7 +111,7 @@ export function registerGoalTools(pi: ExtensionAPI, services: GoalToolServices):
     description: "Inspect a /goal scaffold's instructions and merge/review policy.",
     parameters: Type.Object({ id: Type.String({ description: "Scaffold id, such as default, operations, or zenith." }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const scaffold = await loadScaffold(ctx.cwd, params.id);
+      const scaffold = await loadScaffold(ctx, params.id);
       if (scaffold.source === "bundled" && scaffold.id === "default" && params.id !== "default") {
         return { content: [{ type: "text", text: `Scaffold not found: ${params.id}` }], details: { found: false } };
       }
@@ -128,7 +128,7 @@ export function registerGoalTools(pi: ExtensionAPI, services: GoalToolServices):
     description: "Set the scaffold for the current goal. Use after inspecting/recommending a scaffold or when the user asks for a specific one.",
     parameters: Type.Object({ id: Type.String({ description: "Scaffold id to set on the current goal." }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const scaffold = await loadScaffold(ctx.cwd, params.id);
+      const scaffold = await loadScaffold(ctx, params.id);
       if (scaffold.source === "bundled" && scaffold.id === "default" && params.id !== "default") {
         return { content: [{ type: "text", text: `Scaffold not found: ${params.id}` }], details: { updated: false } };
       }
@@ -146,7 +146,7 @@ export function registerGoalTools(pi: ExtensionAPI, services: GoalToolServices):
     parameters: Type.Object({ objective: Type.String({ description: "Goal objective to classify." }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const id = recommendScaffoldId(params.objective);
-      const scaffold = await loadScaffold(ctx.cwd, id);
+      const scaffold = await loadScaffold(ctx, id);
       const rationale = id === "operations"
         ? "The objective appears to involve live/external operational state or ongoing automation."
         : id === "zenith"
@@ -174,7 +174,7 @@ export function registerGoalTools(pi: ExtensionAPI, services: GoalToolServices):
       if (params.objective.length > MAX_OBJECTIVE_CHARS) throw new Error(`Goal objective is too long (${params.objective.length}/${MAX_OBJECTIVE_CHARS} chars).`);
       const secretError = checkNoSecrets(params.objective, "Goal objective");
       if (secretError) throw new Error(`Refusing to store goal objective: ${secretError}.`);
-      const scaffold = await loadScaffold(ctx.cwd, params.scaffold ?? recommendScaffoldId(params.objective));
+      const scaffold = await loadScaffold(ctx, params.scaffold ?? recommendScaffoldId(params.objective));
       const maxIterations = typeof params.maxIterations === "number" && params.maxIterations > 0 ? Math.floor(params.maxIterations) : undefined;
       const goal = await writeGoal(createStoredGoal({
         id: makeId(),

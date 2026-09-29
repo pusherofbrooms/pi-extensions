@@ -22,7 +22,7 @@ test("loads scaffold policy and preserves project, user, bundled precedence", as
   await put(dirs.bundled, "shared", markdown("shared", "bundled"));
   await put(dirs.user, "shared", markdown("shared", "user"));
   await put(dirs.project, "shared", markdown("shared", "project"));
-  const loaded = await loadScaffold(dirs, "shared");
+  const loaded = await loadScaffold(dirs, "shared", true);
   assert.equal(loaded.source, "project");
   assert.equal(loaded.body, "project");
   assert.deepEqual(loaded.policy, { goalShape: undefined, workflow: "observer-worker", reviewEvery: 3, completionPolicy: undefined, blockedPolicy: undefined, waitingAllowed: true, mergePolicy: undefined });
@@ -46,7 +46,40 @@ test("listing applies override order and sorts deterministically by id", async (
   await put(dirs.bundled, "shared", markdown("shared", "bundled"));
   await put(dirs.user, "a", markdown("a"));
   await put(dirs.project, "shared", markdown("shared", "project"));
-  const listed = await listScaffolds(dirs);
+  const listed = await listScaffolds(dirs, true);
   assert.deepEqual(listed.map(({ id }) => id), ["a", "default", "shared", "z"]);
   assert.equal(listed.find(({ id }) => id === "shared")?.source, "project");
+});
+
+test("untrusted discovery and loading exclude project overrides and project-only scaffolds", async () => {
+  const { dirs } = await fixture();
+  for (const id of ["default", "shared"]) {
+    await put(dirs.bundled, id, markdown(id, `bundled ${id}`));
+    await put(dirs.project, id, markdown(id, `project ${id}`));
+  }
+  await put(dirs.user, "personal", markdown("personal", "user"));
+  await put(dirs.project, "personal", markdown("personal", "project"));
+  await put(dirs.project, "project-only", markdown("project-only"));
+  const listed = await listScaffolds(dirs, false);
+  assert.deepEqual(listed.map(({ id, source }) => [id, source]), [["default", "bundled"], ["personal", "user"], ["shared", "bundled"]]);
+  assert.equal((await loadScaffold(dirs, "shared", false)).body, "bundled shared");
+  assert.equal((await loadScaffold(dirs, "personal", false)).body, "user");
+  assert.equal((await loadScaffold(dirs, "project-only", false)).body, "bundled default");
+});
+
+test("scaffold IDs cannot traverse from user directories into an untrusted project", async () => {
+  const { dirs } = await fixture();
+  await put(dirs.bundled, "default", markdown("default", "safe"));
+  await put(dirs.project, "injected", markdown("injected", "project instructions"));
+  for (const id of ["../project/injected", "..\\project\\injected"]) {
+    assert.equal((await loadScaffold(dirs, id, false)).body, "safe");
+  }
+});
+
+test("untrusted listing does not read the project directory", async () => {
+  const { dirs } = await fixture();
+  await writeFile(dirs.project, "not a directory");
+  assert.equal((await listScaffolds(dirs, false))[0].source, "bundled");
+  assert.equal((await loadScaffold(dirs, "default", false)).source, "bundled");
+  await assert.rejects(listScaffolds(dirs, true), { code: "ENOTDIR" });
 });

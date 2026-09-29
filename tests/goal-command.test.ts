@@ -36,8 +36,8 @@ function setup(options: HarnessOptions = {}) {
     },
     goalPath: (id) => `/goals/${id}.json`,
     goalSummary: (value) => `summary:${value.status}`,
-    listScaffolds: async (cwd) => { calls.lists.push(cwd); return options.scaffolds ?? []; },
-    loadScaffold: async (cwd, id) => { calls.loads.push([cwd, id]); return options.loadedScaffold ?? defaultScaffold; },
+    listScaffolds: async (ctx) => { calls.lists.push(ctx.cwd); return options.scaffolds ?? []; },
+    loadScaffold: async (ctx, id) => { calls.loads.push([ctx.cwd, id]); return options.loadedScaffold ?? defaultScaffold; },
     makeId: () => "goal-id",
     mutateCurrentGoal: async (cwd, mutate) => {
       events.push(`mutate:${cwd}`);

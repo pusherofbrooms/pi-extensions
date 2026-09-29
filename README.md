@@ -212,7 +212,7 @@ Goal scaffolds customize the continuation method. The bundled scaffold IDs are:
 - **`zenith`** — linear gap-closing with review discipline.
 - **`operations`** — long-running portfolio/lane management. The ID is `operations`, not `operational`.
 
-Bundled scaffolds are installed under `scaffolds/<id>/SCAFFOLD.md`. Custom scaffolds can be added at `~/.pi/agent/scaffolds/<id>/SCAFFOLD.md` or project-local `.pi/scaffolds/<id>/SCAFFOLD.md`; project scaffolds override user scaffolds, which override bundled scaffolds. `/goal scaffold <id>` selects an existing scaffold for the active goal. A phase may also name its own scaffold through `goal_phases`.
+Bundled scaffolds are installed under `scaffolds/<id>/SCAFFOLD.md`. Custom scaffolds can be added at `~/.pi/agent/scaffolds/<id>/SCAFFOLD.md` or project-local `.pi/scaffolds/<id>/SCAFFOLD.md`; trusted project scaffolds override user scaffolds, which override bundled scaffolds. Project scaffold discovery and loading require `ctx.isProjectTrusted()` to return true, including commands, tools, resumed continuations, and phase overrides. When trust is declined, bundled and user scaffolds remain available; project-only IDs follow the existing default-scaffold fallback. `/goal scaffold <id>` selects an existing scaffold for the active goal. A phase may also name its own scaffold through `goal_phases`.
 
 Scaffold files are Markdown with optional simple frontmatter:
 

@@ -68,12 +68,12 @@ function scaffoldDirectories(cwd: string) {
   return { bundled: BUNDLED_SCAFFOLDS_DIR, user: USER_SCAFFOLDS_DIR, project: join(cwd, PROJECT_SCAFFOLDS_DIR) };
 }
 
-function loadScaffold(cwd: string, id = "default"): Promise<GoalScaffold> {
-  return loadScaffoldFromDirectories(scaffoldDirectories(cwd), id);
+function loadScaffold(ctx: ExtensionContext, id = "default"): Promise<GoalScaffold> {
+  return loadScaffoldFromDirectories(scaffoldDirectories(ctx.cwd), id, ctx.isProjectTrusted?.() === true);
 }
 
-function listScaffolds(cwd: string): Promise<GoalScaffold[]> {
-  return listScaffoldsFromDirectories(scaffoldDirectories(cwd));
+function listScaffolds(ctx: ExtensionContext): Promise<GoalScaffold[]> {
+  return listScaffoldsFromDirectories(scaffoldDirectories(ctx.cwd), ctx.isProjectTrusted?.() === true);
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {

@@ -20,9 +20,10 @@ function report(role, outcome = "progress", overrides = {}) {
   };
 }
 
-function context(cwd) {
+function context(cwd, trusted = true) {
   return {
     cwd,
+    isProjectTrusted: () => trusted,
     hasUI: false,
     model: undefined,
     sessionManager: { getSessionFile: () => `/sessions/${cwd.split("/").at(-1)}.jsonl` },
@@ -513,3 +514,25 @@ test("scheduled strategic review is recorded without completing the goal", async
   assert.equal(saved.reviews.at(-1).verdict, "ready_to_complete");
   assert.equal(saved.iterations.at(-1).roles[0], "reviewer");
 });
+
+for (const trusted of [false, true]) {
+  test(`scaffold tools and continuation respect project trust (${trusted}) including phase overrides`, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "goal-trust-"));
+    const dir = join(cwd, ".pi", "scaffolds", "default");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "SCAFFOLD.md"), "---\nname: default\nworkflow: worker\n---\nPROJECT_SCAFFOLD_MARKER\n");
+    const ctx = context(cwd, trusted);
+    const extension = registeredExtension();
+    const listed = await extension.tools.get("goal_list_scaffolds").execute("list", {}, undefined, undefined, ctx);
+    assert.equal(listed.details.scaffolds.find(s => s.id === "default").source, trusted ? "project" : "bundled");
+    const loaded = await extension.tools.get("goal_get_scaffold").execute("get", { id: "default" }, undefined, undefined, ctx);
+    assert.equal(loaded.details.scaffold.body.includes("PROJECT_SCAFFOLD_MARKER"), trusted);
+    const state = memoryDeps([report("worker")]);
+    await runDelegatedContinuation(api(), ctx, {
+      id: "trust", version: 1, cwd, status: "active", objective: "Check trust", scaffold: "zenith",
+      createdAt: "now", updatedAt: "now", stepCount: 0, maxIterations: 1, summary: "", checklist: [], notes: [],
+      currentPhaseId: "phase", phases: [{ id: "phase", title: "Phase", objective: "Check", status: "active", scaffold: "default", criterionIds: [] }],
+    }, state.deps);
+    assert.equal(state.prompts[0].includes("PROJECT_SCAFFOLD_MARKER"), trusted);
+  });
+}
