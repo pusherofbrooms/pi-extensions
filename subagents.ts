@@ -603,6 +603,7 @@ export default function (pi: ExtensionAPI) {
 						},
 					],
 					details: makeDetails("single")([]),
+					isError: true,
 				};
 			}
 
@@ -625,6 +626,7 @@ export default function (pi: ExtensionAPI) {
 						return {
 							content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
 							details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+							isError: true,
 						};
 					}
 				}
@@ -654,6 +656,7 @@ export default function (pi: ExtensionAPI) {
 						return {
 							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}).\n\n${await formatAgentResult(result)}` }],
 							details: makeDetails("chain")(results),
+							isError: true,
 						};
 					}
 					previousOutput = getFinalOutput(result.messages);
@@ -674,6 +677,7 @@ export default function (pi: ExtensionAPI) {
 							},
 						],
 						details: makeDetails("parallel")([]),
+						isError: true,
 					};
 				}
 
@@ -688,6 +692,7 @@ export default function (pi: ExtensionAPI) {
 						{ type: "text", text: `Parallel complete: ${successCount}/${results.length} succeeded.\n\n${summaries.join("\n\n---\n\n")}` },
 					],
 					details: makeDetails("parallel")(results),
+					isError: results.some(isAgentFailure),
 				};
 			}
 
@@ -709,12 +714,14 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: await formatAgentResult(result) }],
 					details: makeDetails("single")([result]),
+					isError: isAgentFailure(result),
 				};
 			}
 
 			return {
 				content: [{ type: "text", text: `Invalid parameters. Available agents: ${formatAgentList(agents)}` }],
 				details: makeDetails("single")([]),
+				isError: true,
 			};
 		},
 	});

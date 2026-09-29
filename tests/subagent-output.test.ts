@@ -31,6 +31,7 @@ test("parallel returns ordered, identified final findings without progress callb
     return result(`${prompt} finding`);
   });
   const value = await execute({ tasks: [{ agent: "scout", task: "first" }, { agent: "scout", task: "second" }] });
+  assert.equal(value.isError, false);
   assert.match(text(value), /2\/2 succeeded/);
   assert.match(text(value), /Task 1: \[scout\].*completed\n\nfirst finding\n\n---\n\n### Task 2: \[scout\].*completed\n\nsecond finding/);
   assert.equal(value.details.results.length, 2);
@@ -174,4 +175,73 @@ test("trusted overrides select inline tools by tool name, not role name", async 
   assert.equal(runs[1].inlineExtensions.length, 1);
   assert.deepEqual(runs[2].tools, ["read", "bash", "edit", "write", "grep", "find", "ls"]);
   assert.equal(runs[2].inlineExtensions, undefined);
+});
+
+test("structured status follows runner failure without cascading nested tool errors", async () => {
+  for (const extra of [{}, { exitCode: 1 }, { stopReason: "error" }, { stopReason: "aborted" }]) {
+    const execute = setup(() => result("answer", extra));
+    for (const params of [{ agent: "scout", task: "inspect" },
+      { tasks: [{ agent: "scout", task: "inspect" }] },
+      { chain: [{ agent: "scout", task: "inspect" }] }]) {
+      const value = await execute(params);
+      assert.equal(Boolean(value.isError), Object.keys(extra).length > 0);
+      assert.equal(value.details.results.length, 1);
+    }
+  }
+  const nested = { role: "toolResult", isError: true, content: [{ type: "text", text: "handled failure" }] };
+  const execute = setup(() => result("recovered", { messages: [nested, ...result("recovered").messages] }));
+  const value = await execute({ agent: "scout", task: "inspect" });
+  assert.equal(value.isError, false);
+  assert.equal(text(value), "recovered");
+});
+
+test("mixed parallel is an error; chain retains completed steps and stops", async () => {
+  for (const mode of ["tasks", "chain"]) {
+    const prompts: string[] = [];
+    const execute = setup(({ prompt }) => {
+      prompts.push(prompt);
+      return result(prompt, prompt === "second" ? { exitCode: 1 } : {});
+    });
+    const value = await execute({ [mode]: ["first", "second", "third"].map(task => ({ agent: "scout", task })) });
+    assert.equal(value.isError, true);
+    assert.deepEqual(prompts, mode === "chain" ? ["first", "second"] : ["first", "second", "third"]);
+    assert.equal(value.details.results.length, prompts.length);
+    assert.equal(value.details.results[0].messages[0].content[0].text, "first");
+  }
+});
+
+test("invalid modes, task limit and unknown agents return structured errors", async () => {
+  const execute = setup(() => { throw new Error("must not run"); });
+  for (const params of [{}, { tasks: [] }, { agent: "scout" },
+    { agent: "scout", task: "one", tasks: [{ agent: "scout", task: "two" }] },
+    { tasks: Array.from({ length: 9 }, () => ({ agent: "scout", task: "inspect" })) },
+    { agent: "missing-test-agent", task: "inspect" }]) {
+    const value = await execute(params);
+    assert.equal(value.isError, true);
+    assert.match(text(value), /Invalid parameters|Too many parallel tasks|Unknown agent/);
+  }
+});
+
+test("declined project approval and invalid thinking return structured errors", async (t) => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const cwd = await mkdtemp(join(tmpdir(), "pi-subagent-status-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await mkdir(join(cwd, ".pi", "agents"), { recursive: true });
+  await writeFile(join(cwd, ".pi", "agents", "custom.md"), "---\nname: custom\ndescription: Test\nthinking: invalid\n---\nInspect.\n");
+  const execute = setup(() => { throw new Error("must not run"); }, {
+    cwd, isProjectTrusted: () => true, hasUI: true, ui: { confirm: async () => false },
+  });
+  for (const params of [{ agent: "custom", task: "inspect" },
+    { chain: [{ agent: "custom", task: "inspect" }] },
+    { tasks: [{ agent: "custom", task: "inspect" }] }]) {
+    const value = await execute(params);
+    assert.equal(value.isError, true);
+    assert.equal(text(value), "Canceled: project-local agents not approved.");
+    assert.deepEqual(value.details.results, []);
+  }
+  const value = await execute({ agent: "custom", task: "inspect", confirmProjectAgents: false });
+  assert.equal(value.isError, true);
+  assert.match(text(value), /Invalid agent thinking level/);
 });

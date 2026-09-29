@@ -117,6 +117,8 @@ Adds a subagent tool and command helpers:
 - Each subagent result includes the persisted Pi `sessionFile` path in tool/message details for later audit or self-improvement.
 - Failed or aborted runs surface backend diagnostics in single, parallel, chain, and command output, label any prior response as incomplete, and show the session-log path when available. Chains stop on error/abort even if the runner reports exit code zero. Long failure output is truncated with a link to the full text; successful single/chain output remains unchanged.
 
+Tool results report `isError: true` for failed/aborted single runs, stopped chains, and parallel batches with any failed task. Invalid modes, excessive parallel tasks, and declined project-agent approval also report errors. Content and details are preserved; status follows the runner result, not nested tool errors, and introduces no retries or automatic failure cascading.
+
 Generic `subagent` remains freeform by default. Agents may be asked in their task text or agent prompt to return JSON, but the tool does not currently enforce report contracts or parse structured output. The structured report-contract machinery is intentionally kept in `/goal`, where lifecycle authority, validation, and merge policy are explicit. Optional generic report-contract mode is deferred until there is a concrete non-goal use case so existing `/agent`, alias, single, parallel, and chain behavior does not change unexpectedly.
 
 Bundled regular-agent tools:
