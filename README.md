@@ -21,13 +21,13 @@ This keeps your own `~/.pi/agent/extensions` directory clean and lets these exte
 
 ## Compatibility and updating
 
-Local validation targets **Pi 0.99.1**. Pi supplies `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox` at runtime; their `*` peer ranges follow Pi's packaging contract, not a guarantee of compatibility with every Pi version. Only Defuddle and LinkeDOM are runtime dependencies.
+Local validation targets **Pi 1.0.4**. Pi supplies `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox` at runtime; their `*` peer ranges follow Pi's packaging contract, not a guarantee of compatibility with every Pi version. Only Defuddle and LinkeDOM are runtime dependencies.
 
 ```bash
 pi update git:github.com/pusherofbrooms/pi-extensions
 ```
 
-On Pi 0.99.1, `pi update --extensions` updates all installed packages; bare `pi update` updates Pi itself. Update a Nix-managed Pi through its Nix configuration instead.
+On Pi 1.0.4, `pi update --extensions` updates all installed packages; bare `pi update` updates Pi itself. Update a Nix-managed Pi through its Nix configuration instead.
 
 For local development, Pi does not install local-package dependencies. Run `nix develop --command npm ci`. When changing the compatibility target, update both pinned Pi devDependencies together, run `nix develop --command npm install` to refresh the lockfile, then `nix develop --command npm run check`. Keep host packages out of `dependencies` and bundles; retain `typebox` as a development dependency for local validation.
 

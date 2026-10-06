@@ -22,7 +22,7 @@ test("host packages are peers, never runtime dependencies or bundles", () => {
   }
   for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox"]) {
     assert.equal(manifest.peerDependencies[name], "*", name);
-    assert.equal(manifest.devDependencies[name], name === "typebox" ? "^1.3.19" : "0.99.1", name);
+    assert.equal(manifest.devDependencies[name], name === "typebox" ? "^1.3.36" : "1.0.4", name);
   }
 });
 
@@ -31,12 +31,12 @@ test("lockfile matches manifest and pins local Pi validation versions", () => {
     assert.deepEqual(lock.packages[""][field], manifest[field]);
   }
   for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent"]) {
-    assert.equal(lock.packages[`node_modules/${name}`].version, "0.99.1");
+    assert.equal(lock.packages[`node_modules/${name}`].version, "1.0.4");
   }
 });
 
 test("runtime dependencies and explicit extension entry points are preserved", () => {
-  assert.deepEqual(manifest.dependencies, { defuddle: "^0.19.3", linkedom: "^0.18.13" });
+  assert.deepEqual(manifest.dependencies, { defuddle: "^0.19.4", linkedom: "^0.18.13" });
   assert.ok(manifest.keywords.includes("pi-package"));
   assert.deepEqual(manifest.pi.extensions, [
     "./show-system-prompt.ts",
